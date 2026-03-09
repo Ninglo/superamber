@@ -1,0 +1,1830 @@
+import {
+  addDays,
+  dateKeyToMonthDay,
+  formatTodayLabel,
+  getChineseWeekday,
+  getWeekNumber,
+  monthDayToDateKey,
+  parseDateFromClassTime
+} from './calendar';
+import {
+  applyManualGrouping,
+  collectStudentsFromArc,
+  collectStudentsFromCircular,
+  collectStudentsFromRows,
+  convertStudentsToArc,
+  convertStudentsToCircular,
+  convertStudentsToRows,
+  getCircularGroupCount,
+  getCircularGroupCountFromGroups,
+  getRowGroupCount,
+  getRowsGroupCountFromGroups,
+  getRowsSlotMap,
+  layoutMaxStudents,
+  normalizeStudentList,
+  placeCentered,
+  rotateArcLayoutForWeek,
+  rotateCircularLayoutForWeek,
+  rotateRowsLayoutForWeek
+} from './layouts';
+import { recognizeClassFromImage, type OCRClassDraft } from './ocr';
+import { loadOCRSettings, saveOCRSettings } from './ocrSettings';
+import { refreshSeating } from './render';
+import {
+  createInitialState,
+  makeClassShell,
+  makeEmptyArcGroups,
+  makeEmptyCircularGroups,
+  makeEmptyLocationInfo,
+  makeEmptyRowGroups
+} from './state';
+import { loadClassData, loadUserProfile, saveClassData, saveUserProfile } from './storage';
+import type { ArcGroups, ClassConfig, LayoutType, LocationInfo, OCRSettings, ThemeName, TimeMode } from './types';
+
+interface OCRDraftView {
+  id: string;
+  fileName: string;
+  source: string;
+  errorMessage: string;
+  className: string;
+  layout: LayoutType;
+  mode: TimeMode;
+  overwrite: boolean;
+  groupsText: string;
+  detectedStudentCount: number;
+  placedStudentCount: number;
+  confidence: number;
+  date: string;
+  day: string;
+  weekday: string;
+  time: string;
+  campus: string;
+  floor: string;
+  room: string;
+  fullDate: string;
+}
+
+const state = createInitialState();
+let ocrDrafts: OCRDraftView[] = [];
+let ocrSettings: OCRSettings = loadOCRSettings();
+
+const byId = <T extends HTMLElement>(id: string): T => {
+  const element = document.getElementById(id);
+  if (!element) {
+    throw new Error(`Missing element: ${id}`);
+  }
+  return element as T;
+};
+
+const classSelect = (): HTMLSelectElement => byId<HTMLSelectElement>('classSelect');
+const headerClassName = (): HTMLInputElement => byId<HTMLInputElement>('headerClassName');
+const notes = (): HTMLDivElement => byId<HTMLDivElement>('notes');
+const classroom = (): HTMLDivElement => byId<HTMLDivElement>('classroom');
+
+const showDialog = (id: string): void => {
+  byId<HTMLDivElement>(id).style.display = 'block';
+  byId<HTMLDivElement>('overlay').style.display = 'block';
+};
+
+const hideDialog = (id: string): void => {
+  byId<HTMLDivElement>(id).style.display = 'none';
+  byId<HTMLDivElement>('overlay').style.display = 'none';
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const saveProfile = (): void => {
+  saveUserProfile(state.userProfile);
+};
+
+const persist = (): void => {
+  saveClassData(state.classData);
+};
+
+const applyTheme = (theme: ThemeName): void => {
+  document.body.classList.remove('theme-classic', 'theme-sky', 'theme-sunny');
+  document.body.classList.add(`theme-${theme}`);
+  byId<HTMLSelectElement>('themeSelect').value = theme;
+};
+
+const ensureUsername = (): void => {
+  const currentName = state.userProfile.username.trim();
+  if (currentName) {
+    return;
+  }
+
+  const input = window.prompt('请输入用户名', 'Teacher');
+  const username = input?.trim() || 'Teacher';
+  state.userProfile.username = username;
+  saveProfile();
+};
+
+const updateWelcome = (): void => {
+  const week = getWeekNumber();
+  byId<HTMLSpanElement>('homeWeekNum').textContent = String(week);
+  byId<HTMLHeadingElement>('welcomeText').textContent = `Welcome ${state.userProfile.username}!`;
+  byId<HTMLParagraphElement>('todayText').textContent = `今天是 ${formatTodayLabel()}，第${week}周，${getChineseWeekday()}`;
+};
+
+const countStudentsInMode = (mode: ClassConfig[TimeMode]): number => {
+  if (mode.layout === 'circular') {
+    return collectStudentsFromCircular(mode.groups || []).length;
+  }
+  if (mode.layout === 'rows') {
+    return collectStudentsFromRows(mode.rowGroups || makeEmptyRowGroups()).length;
+  }
+  return collectStudentsFromArc(mode.arcGroups || makeEmptyArcGroups()).length;
+};
+
+const renderClassOverview = (): void => {
+  const container = byId<HTMLDivElement>('homeClassList');
+  const classNames = Object.keys(state.classData).sort();
+
+  if (classNames.length === 0) {
+    container.innerHTML = '<div class="class-row empty">暂无班级，请点击“新建班级座位表”</div>';
+    return;
+  }
+
+  const rows = classNames
+    .map((className) => {
+      const config = state.classData[className];
+      const weekdayCount = countStudentsInMode(config.weekday);
+      const weekendCount = countStudentsInMode(config.weekend);
+      return `
+        <div class="class-row">
+          <div><strong>${escapeHtml(className)}</strong></div>
+          <div>周中：${escapeHtml(config.weekday.layout)}</div>
+          <div>周末：${escapeHtml(config.weekend.layout)}</div>
+          <div>${weekdayCount}/${weekendCount} 人</div>
+          <button data-open-class="${escapeHtml(className)}">进入编辑</button>
+        </div>
+      `;
+    })
+    .join('');
+
+  container.innerHTML = rows;
+};
+
+const setCurrentView = (view: 'home' | 'editor'): void => {
+  state.currentView = view;
+  const home = byId<HTMLDivElement>('homeView');
+  const editor = byId<HTMLDivElement>('editorView');
+
+  if (view === 'home') {
+    home.classList.remove('hidden');
+    editor.classList.add('hidden');
+    updateWelcome();
+    renderClassOverview();
+    return;
+  }
+
+  home.classList.add('hidden');
+  editor.classList.remove('hidden');
+};
+
+const updateClassSelect = (): void => {
+  const select = classSelect();
+  select.innerHTML = '<option value="">选择班级...</option>';
+
+  Object.keys(state.classData)
+    .sort()
+    .forEach((className) => {
+      const option = document.createElement('option');
+      option.value = className;
+      option.textContent = className;
+      select.appendChild(option);
+    });
+};
+
+const sanitizeLocationInfo = (location: Partial<LocationInfo> | undefined): LocationInfo => {
+  const merged: LocationInfo = {
+    ...makeEmptyLocationInfo(),
+    ...location
+  };
+
+  if (!merged.fullDate) {
+    merged.fullDate = monthDayToDateKey(merged.date, merged.day) || '';
+  }
+
+  return merged;
+};
+
+const sanitizeModeData = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] => {
+  const locationInfo = sanitizeLocationInfo(mode.locationInfo || {});
+
+  if (mode.layout === 'circular') {
+    const base = makeEmptyCircularGroups();
+    (mode.groups || []).slice(0, 6).forEach((group, idx) => {
+      base[idx] = normalizeStudentList(group).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+    });
+
+    return {
+      layout: 'circular',
+      groups: base,
+      rowGroups: null,
+      arcGroups: null,
+      currentArrangement: mode.currentArrangement || 0,
+      locationInfo
+    };
+  }
+
+  if (mode.layout === 'rows') {
+    const base = makeEmptyRowGroups();
+    const rows = mode.rowGroups?.rows || [];
+    for (let index = 0; index < 3; index += 1) {
+      base.rows[index].left = normalizeStudentList(rows[index]?.left || []).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+      base.rows[index].right = normalizeStudentList(rows[index]?.right || []).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+    }
+
+    return {
+      layout: 'rows',
+      groups: null,
+      rowGroups: base,
+      arcGroups: null,
+      currentArrangement: mode.currentArrangement || 0,
+      locationInfo
+    };
+  }
+
+  const arc = makeEmptyArcGroups();
+  const source = mode.arcGroups?.rows || ((mode.groups?.length === 2 && mode.groups[0].length === 18) ? (mode.groups as string[][]) : []);
+  source.slice(0, 2).forEach((row, idx) => {
+    arc.rows[idx] = normalizeStudentList(row).slice(0, 18).concat(Array(18).fill('')).slice(0, 18);
+  });
+
+  return {
+    layout: 'arc',
+    groups: null,
+    rowGroups: null,
+    arcGroups: arc,
+    currentArrangement: mode.currentArrangement || 0,
+    locationInfo
+  };
+};
+
+const loadSavedData = (): void => {
+  const loaded = loadClassData();
+  const sanitized: Record<string, ClassConfig> = {};
+
+  Object.entries(loaded).forEach(([className, config]) => {
+    const shell = makeClassShell();
+    shell.weekday = sanitizeModeData(config.weekday || shell.weekday);
+    shell.weekend = sanitizeModeData(config.weekend || shell.weekend);
+    sanitized[className] = shell;
+  });
+
+  state.classData = sanitized;
+  updateClassSelect();
+};
+
+const getLocationInfo = (): LocationInfo => {
+  const date = byId<HTMLInputElement>('date').value.trim();
+  const day = byId<HTMLInputElement>('day').value.trim();
+  const cachedFullDate = byId<HTMLInputElement>('date').dataset.fullDate || '';
+  const fullDate = monthDayToDateKey(date, day) || cachedFullDate;
+
+  return {
+    date,
+    day,
+    weekday: byId<HTMLSelectElement>('weekday').value,
+    time: byId<HTMLInputElement>('time').value,
+    campus: byId<HTMLSelectElement>('campus').value,
+    floor: byId<HTMLInputElement>('floor').value,
+    room: byId<HTMLInputElement>('room').value,
+    notes: notes().innerHTML,
+    fullDate
+  };
+};
+
+const setLocationInfo = (info: Partial<LocationInfo> | undefined): void => {
+  const merged = sanitizeLocationInfo(info);
+  byId<HTMLInputElement>('date').value = merged.date;
+  byId<HTMLInputElement>('date').dataset.fullDate = merged.fullDate;
+  byId<HTMLInputElement>('day').value = merged.day;
+  byId<HTMLSelectElement>('weekday').value = merged.weekday;
+  byId<HTMLInputElement>('time').value = merged.time;
+  byId<HTMLSelectElement>('campus').value = merged.campus;
+  byId<HTMLInputElement>('floor').value = merged.floor;
+  byId<HTMLInputElement>('room').value = merged.room;
+  notes().innerHTML = merged.notes;
+};
+
+const captureCurrentModeData = (): ClassConfig[TimeMode] => ({
+  layout: state.currentLayout,
+  groups: state.currentLayout === 'circular' ? JSON.parse(JSON.stringify(state.groups)) : null,
+  rowGroups: state.currentLayout === 'rows' ? JSON.parse(JSON.stringify(state.rowGroups)) : null,
+  arcGroups: state.currentLayout === 'arc' ? JSON.parse(JSON.stringify(state.arcGroups)) : null,
+  currentArrangement: state.currentArrangement,
+  locationInfo: getLocationInfo()
+});
+
+const ensureClassShell = (className: string): void => {
+  if (!state.classData[className]) {
+    state.classData[className] = makeClassShell(state.currentLayout);
+  }
+};
+
+const saveCurrentClassMode = (): void => {
+  const className = classSelect().value;
+  if (!className) {
+    return;
+  }
+
+  ensureClassShell(className);
+  state.classData[className][state.currentTimeMode] = captureCurrentModeData();
+  persist();
+};
+
+const resetLayoutData = (): void => {
+  state.groups = makeEmptyCircularGroups();
+  state.rowGroups = makeEmptyRowGroups();
+  state.arcGroups = makeEmptyArcGroups();
+};
+
+const setLayoutClass = (layout: LayoutType): void => {
+  const target = classroom();
+  target.className = 'classroom';
+  if (layout === 'rows') {
+    target.classList.add('three-rows-layout');
+  } else if (layout === 'arc') {
+    target.classList.add('arc-layout');
+  }
+};
+
+const refresh = (): void => {
+  refreshSeating(state, {
+    handleSeatChange: (groupIndex, seatIndex, value) => {
+      if (state.isEditMode) {
+        state.groups[groupIndex][seatIndex] = value;
+      }
+    },
+    handleRowSeatChange: (rowIndex, side, seatIndex, value) => {
+      if (state.isEditMode) {
+        state.rowGroups.rows[rowIndex][side][seatIndex] = value;
+      }
+    },
+    handleArcSeatChange: (rowIndex, seatIndex, value) => {
+      if (state.isEditMode) {
+        state.arcGroups.rows[rowIndex][seatIndex] = value;
+      }
+    }
+  });
+};
+
+const loadClass = (): void => {
+  const className = classSelect().value;
+  const data = state.classData[className]?.[state.currentTimeMode];
+
+  if (!className || !data) {
+    state.currentLayout = 'circular';
+    resetLayoutData();
+    state.currentArrangement = 0;
+    setLocationInfo(makeEmptyLocationInfo());
+    headerClassName().value = className || '';
+    setLayoutClass(state.currentLayout);
+    refresh();
+    return;
+  }
+
+  state.currentLayout = data.layout || 'circular';
+  state.currentArrangement = data.currentArrangement || 0;
+
+  if (state.currentLayout === 'circular') {
+    state.groups = JSON.parse(JSON.stringify(data.groups || makeEmptyCircularGroups()));
+    state.rowGroups = makeEmptyRowGroups();
+    state.arcGroups = makeEmptyArcGroups();
+  } else if (state.currentLayout === 'rows') {
+    state.rowGroups = JSON.parse(JSON.stringify(data.rowGroups || makeEmptyRowGroups()));
+    state.groups = makeEmptyCircularGroups();
+    state.arcGroups = makeEmptyArcGroups();
+  } else {
+    state.arcGroups = JSON.parse(JSON.stringify(data.arcGroups || makeEmptyArcGroups()));
+    state.groups = makeEmptyCircularGroups();
+    state.rowGroups = makeEmptyRowGroups();
+  }
+
+  setLocationInfo(data.locationInfo);
+  headerClassName().value = className;
+  setLayoutClass(state.currentLayout);
+  refresh();
+};
+
+const openClassInEditor = (className: string): void => {
+  classSelect().value = className;
+  state.currentTimeMode = 'weekday';
+  byId<HTMLButtonElement>('weekdayBtn').className = 'active';
+  byId<HTMLButtonElement>('weekendBtn').className = '';
+  loadClass();
+  setCurrentView('editor');
+};
+
+const goHome = (): void => {
+  saveCurrentClassMode();
+  setCurrentView('home');
+};
+
+const toggleTime = (mode: TimeMode): void => {
+  saveCurrentClassMode();
+  state.currentTimeMode = mode;
+  byId<HTMLButtonElement>('weekdayBtn').className = mode === 'weekday' ? 'active' : '';
+  byId<HTMLButtonElement>('weekendBtn').className = mode === 'weekend' ? 'active' : '';
+  loadClass();
+};
+
+const showSaveDialog = (): void => {
+  byId<HTMLInputElement>('saveClassName').value = headerClassName().value;
+  showDialog('saveDialog');
+};
+
+const hideSaveDialog = (): void => {
+  hideDialog('saveDialog');
+};
+
+const saveClass = (): void => {
+  const className = byId<HTMLInputElement>('saveClassName').value.trim();
+  if (!className) {
+    alert('请输入班级名称');
+    return;
+  }
+
+  ensureClassShell(className);
+  state.classData[className][state.currentTimeMode] = captureCurrentModeData();
+
+  persist();
+  updateClassSelect();
+  classSelect().value = className;
+  headerClassName().value = className;
+  hideSaveDialog();
+  renderClassOverview();
+};
+
+const deleteCurrentClass = (): void => {
+  const className = classSelect().value;
+  if (!className) {
+    return;
+  }
+
+  if (!confirm(`确定要删除 ${className} 的所有配置吗？`)) {
+    return;
+  }
+
+  delete state.classData[className];
+  persist();
+  updateClassSelect();
+  renderClassOverview();
+
+  headerClassName().value = '';
+  state.currentLayout = 'circular';
+  resetLayoutData();
+  state.currentArrangement = 0;
+  setLocationInfo(makeEmptyLocationInfo());
+  refresh();
+};
+
+const syncDateField = (): void => {
+  const info = getLocationInfo();
+  byId<HTMLInputElement>('date').dataset.fullDate = info.fullDate;
+};
+
+const showImportDialog = (): void => {
+  byId<HTMLTextAreaElement>('studentNames').value = '';
+  byId<HTMLDivElement>('errorMsg').textContent = '';
+  byId<HTMLDivElement>('errorMsg').className = '';
+  showDialog('importDialog');
+};
+
+const hideImportDialog = (): void => {
+  hideDialog('importDialog');
+};
+
+const showError = (message: string): void => {
+  const errorMsg = byId<HTMLDivElement>('errorMsg');
+  errorMsg.textContent = message;
+  errorMsg.className = 'error';
+};
+
+const showSuccess = (message: string): void => {
+  const errorMsg = byId<HTMLDivElement>('errorMsg');
+  errorMsg.textContent = message;
+  errorMsg.className = 'success';
+  setTimeout(() => {
+    errorMsg.textContent = '';
+    errorMsg.className = '';
+  }, 2500);
+};
+
+const ensureClassForImportSave = (): string | null => {
+  const selected = classSelect().value.trim();
+  if (selected) {
+    return selected;
+  }
+
+  const proposed = headerClassName().value.trim() || `Class${Object.keys(state.classData).length + 1}`;
+  const input = window.prompt('请输入班级名称以保存导入结果', proposed);
+  const className = input?.trim();
+  if (!className) {
+    return null;
+  }
+
+  ensureClassShell(className);
+  updateClassSelect();
+  classSelect().value = className;
+  headerClassName().value = className;
+  return className;
+};
+
+const saveAndRefresh = (message: string): void => {
+  if (state.currentView === 'home') {
+    setCurrentView('editor');
+  }
+
+  refresh();
+  hideImportDialog();
+
+  const className = ensureClassForImportSave();
+  if (!className) {
+    alert('已导入到当前画布，但你取消了保存，数据不会持久化。');
+    return;
+  }
+
+  saveCurrentClassMode();
+  showSuccess(message);
+};
+
+const importCircularLayout = (students: string[]): void => {
+  const normalized = normalizeStudentList(students);
+  if (normalized.length === 0) {
+    showError('请至少输入1名学生');
+    return;
+  }
+  if (normalized.length > 36) {
+    showError(`圆桌布局最多36人，当前${normalized.length}人`);
+    return;
+  }
+
+  state.currentLayout = 'circular';
+  state.groups = convertStudentsToCircular(normalized);
+  state.rowGroups = makeEmptyRowGroups();
+  state.arcGroups = makeEmptyArcGroups();
+  state.currentArrangement = 0;
+  setLayoutClass('circular');
+
+  const groupCount = getCircularGroupCount(normalized.length);
+  saveAndRefresh(`成功导入${normalized.length}人，分为${groupCount}组`);
+};
+
+const importRowsLayout = (students: string[]): void => {
+  const normalized = normalizeStudentList(students);
+  if (normalized.length === 0) {
+    showError('请至少输入1名学生');
+    return;
+  }
+  if (normalized.length > 36) {
+    showError(`三横排布局最多36人，当前${normalized.length}人`);
+    return;
+  }
+
+  state.currentLayout = 'rows';
+  state.rowGroups = convertStudentsToRows(normalized);
+  state.groups = makeEmptyCircularGroups();
+  state.arcGroups = makeEmptyArcGroups();
+  state.currentArrangement = 0;
+  setLayoutClass('rows');
+
+  const groupCount = getRowGroupCount(normalized.length);
+  saveAndRefresh(`成功导入${normalized.length}人，分为${groupCount}组`);
+};
+
+const importArcLayout = (input: string): void => {
+  const lines = input
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  let first: string[] = [];
+  let second: string[] = [];
+
+  const splitNames = (text: string): string[] =>
+    text
+      .split(/[,，]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  const firstLine = lines[0] || '';
+  const secondLine = lines[1] || '';
+
+  if (firstLine.startsWith('第一排')) {
+    first = splitNames(firstLine.substring(firstLine.indexOf(':') + 1));
+  } else if (firstLine) {
+    first = splitNames(firstLine);
+  }
+
+  if (secondLine.startsWith('第二排')) {
+    second = splitNames(secondLine.substring(secondLine.indexOf(':') + 1));
+  } else if (secondLine) {
+    second = splitNames(secondLine);
+  }
+
+  const total = first.length + second.length;
+  if (total === 0) {
+    showError('请至少输入1名学生');
+    return;
+  }
+  if (total > 36) {
+    showError(`圆弧布局最多36人，当前${total}人`);
+    return;
+  }
+
+  state.currentLayout = 'arc';
+  state.groups = makeEmptyCircularGroups();
+  state.rowGroups = makeEmptyRowGroups();
+  state.arcGroups = makeEmptyArcGroups();
+  placeCentered(state.arcGroups.rows[0], first);
+  placeCentered(state.arcGroups.rows[1], second);
+  state.currentArrangement = 0;
+  setLayoutClass('arc');
+
+  saveAndRefresh(`成功导入圆弧布局，共${total}人`);
+};
+
+const importStudents = (): void => {
+  const input = byId<HTMLTextAreaElement>('studentNames').value;
+  const students = input
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean);
+
+  if (byId<HTMLInputElement>('circularLayout').checked) {
+    importCircularLayout(students);
+    return;
+  }
+
+  if (byId<HTMLInputElement>('rowsLayout').checked) {
+    importRowsLayout(students);
+    return;
+  }
+
+  importArcLayout(input);
+};
+
+const rotateLocationByWeek = (info: LocationInfo): LocationInfo => {
+  const next = { ...info };
+  const currentKey = next.fullDate || monthDayToDateKey(next.date, next.day) || parseDateFromClassTime(next.time) || '';
+
+  if (!currentKey) {
+    return next;
+  }
+
+  const nextKey = addDays(currentKey, 7);
+  if (!nextKey) {
+    return next;
+  }
+
+  const converted = dateKeyToMonthDay(nextKey);
+  next.fullDate = nextKey;
+  if (converted) {
+    next.date = converted.month;
+    next.day = converted.day;
+    if (!next.weekday) {
+      next.weekday = converted.weekday;
+    }
+  }
+
+  return next;
+};
+
+const rotateSingleClassMode = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] => {
+  if (mode.layout === 'circular') {
+    return {
+      ...mode,
+      groups: rotateCircularLayoutForWeek(mode.groups || makeEmptyCircularGroups()),
+      currentArrangement: (mode.currentArrangement + 1) % 200,
+      locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+    };
+  }
+
+  if (mode.layout === 'rows') {
+    return {
+      ...mode,
+      rowGroups: rotateRowsLayoutForWeek(mode.rowGroups || makeEmptyRowGroups()),
+      currentArrangement: (mode.currentArrangement + 1) % 200,
+      locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+    };
+  }
+
+  return {
+    ...mode,
+    arcGroups: rotateArcLayoutForWeek(mode.arcGroups || makeEmptyArcGroups()),
+    currentArrangement: (mode.currentArrangement + 1) % 200,
+    locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+  };
+};
+
+const generateSeating = (): void => {
+  if (state.isEditMode) {
+    refresh();
+    return;
+  }
+
+  if (state.currentLayout === 'circular') {
+    state.groups = rotateCircularLayoutForWeek(state.groups);
+  } else if (state.currentLayout === 'rows') {
+    state.rowGroups = rotateRowsLayoutForWeek(state.rowGroups);
+  } else {
+    state.arcGroups = rotateArcLayoutForWeek(state.arcGroups);
+  }
+
+  state.currentArrangement = (state.currentArrangement + 1) % 200;
+  setLocationInfo(rotateLocationByWeek(getLocationInfo()));
+  refresh();
+  saveCurrentClassMode();
+};
+
+const generateWeeklySeating = (): void => {
+  Object.keys(state.classData).forEach((className) => {
+    const current = state.classData[className];
+    state.classData[className] = {
+      weekday: rotateSingleClassMode(current.weekday),
+      weekend: rotateSingleClassMode(current.weekend)
+    };
+  });
+
+  persist();
+  updateWelcome();
+  renderClassOverview();
+
+  if (state.currentView === 'editor' && classSelect().value) {
+    loadClass();
+  }
+
+  alert('已生成新一周座位表，所有班级已完成轮转并保存。');
+};
+
+const toggleEditMode = (): void => {
+  state.isEditMode = !state.isEditMode;
+  const button = document.querySelector<HTMLButtonElement>('.edit-mode button');
+  if (button) {
+    button.textContent = state.isEditMode ? '退出编辑' : '编辑模式';
+    button.style.background = state.isEditMode ? '#f44336' : '#2196F3';
+  }
+  refresh();
+};
+
+const toggleLayout = (): void => {
+  const currentStudents =
+    state.currentLayout === 'circular'
+      ? collectStudentsFromCircular(state.groups)
+      : state.currentLayout === 'rows'
+        ? collectStudentsFromRows(state.rowGroups)
+        : collectStudentsFromArc(state.arcGroups);
+
+  const nextLayout: LayoutType =
+    state.currentLayout === 'circular' ? 'rows' : state.currentLayout === 'rows' ? 'arc' : 'circular';
+
+  if (currentStudents.length > layoutMaxStudents(nextLayout)) {
+    alert(`当前人数超出${nextLayout}布局上限`);
+    return;
+  }
+
+  state.currentLayout = nextLayout;
+  state.currentArrangement = 0;
+
+  if (nextLayout === 'circular') {
+    state.groups = convertStudentsToCircular(currentStudents);
+    state.rowGroups = makeEmptyRowGroups();
+    state.arcGroups = makeEmptyArcGroups();
+  } else if (nextLayout === 'rows') {
+    state.rowGroups = convertStudentsToRows(currentStudents);
+    state.groups = makeEmptyCircularGroups();
+    state.arcGroups = makeEmptyArcGroups();
+  } else {
+    state.arcGroups = convertStudentsToArc(currentStudents);
+    state.groups = makeEmptyCircularGroups();
+    state.rowGroups = makeEmptyRowGroups();
+  }
+
+  setLayoutClass(nextLayout);
+  refresh();
+  saveCurrentClassMode();
+};
+
+const updateLayoutDescription = (): void => {
+  const layoutDesc = byId<HTMLDivElement>('layoutDescription');
+  if (byId<HTMLInputElement>('circularLayout').checked) {
+    layoutDesc.innerHTML = `
+      <ul style="font-size: 14px; color: #666; margin: 10px 0;">
+        <li>圆桌：31-36人=6组，25-30人=5组，19-24人=4组，1-18人=3组</li>
+        <li>每组最多6人，自动跳过空组轮转</li>
+      </ul>
+    `;
+    return;
+  }
+
+  if (byId<HTMLInputElement>('rowsLayout').checked) {
+    layoutDesc.innerHTML = `
+      <ul style="font-size: 14px; color: #666; margin: 10px 0;">
+        <li>三横排：31-36人=6组，25-30人=5组，1-24人=4组</li>
+        <li>轮转按组号+2，跳过空组</li>
+      </ul>
+    `;
+    return;
+  }
+
+  layoutDesc.innerHTML = `
+    <ul style="font-size: 14px; color: #666; margin: 10px 0;">
+      <li>圆弧布局：两排，每排最多18人</li>
+      <li>支持第一排/第二排导入</li>
+    </ul>
+  `;
+};
+
+const showCreateClassDialog = (): void => {
+  showDialog('createClassDialog');
+};
+
+const hideCreateClassDialog = (): void => {
+  hideDialog('createClassDialog');
+};
+
+const groupsToText = (layout: LayoutType, groups: string[][]): string => {
+  if (layout === 'arc') {
+    const first = groups[0]?.filter(Boolean).join(', ') || '';
+    const second = groups[1]?.filter(Boolean).join(', ') || '';
+    return `第一排: ${first}\n第二排: ${second}`;
+  }
+
+  const lines: string[] = [];
+  groups.forEach((group, index) => {
+    const names = group.filter(Boolean);
+    if (names.length > 0) {
+      lines.push(`Group ${index + 1}: ${names.join(', ')}`);
+    }
+  });
+  return lines.join('\n');
+};
+
+const parseGroupsText = (layout: LayoutType, text: string): string[][] => {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (layout === 'arc') {
+    const rows = [Array(18).fill(''), Array(18).fill('')] as ArcGroups['rows'];
+    const parseLine = (line: string): string[] =>
+      line
+        .split(/[,，]/)
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .slice(0, 18);
+
+    let first: string[] = [];
+    let second: string[] = [];
+    if (lines[0]?.startsWith('第一排')) {
+      first = parseLine(lines[0].substring(lines[0].indexOf(':') + 1));
+      second = parseLine((lines[1] || '').substring((lines[1] || '').indexOf(':') + 1));
+    } else {
+      first = parseLine(lines[0] || '');
+      second = parseLine(lines[1] || '');
+    }
+
+    placeCentered(rows[0], first);
+    placeCentered(rows[1], second);
+    return rows;
+  }
+
+  const groups = Array.from({ length: 6 }, () => [] as string[]);
+  lines.forEach((line, lineIndex) => {
+    const match = line.match(/Group\s*(\d+)\s*:/i);
+    if (match) {
+      const groupIndex = Math.max(0, Math.min(5, Number.parseInt(match[1], 10) - 1));
+      groups[groupIndex] = line
+        .substring(line.indexOf(':') + 1)
+        .split(/[,，]/)
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      return;
+    }
+
+    if (lineIndex < 6) {
+      groups[lineIndex] = line
+        .split(/[,，]/)
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .slice(0, 6);
+    }
+  });
+
+  return groups;
+};
+
+const toDraft = (result: OCRClassDraft): OCRDraftView => {
+  const draftClassName = result.className || result.fileName.replace(/\.[^.]+$/, '').slice(0, 12);
+
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    fileName: result.fileName,
+    source: result.source || 'unknown',
+    errorMessage: '',
+    className: draftClassName,
+    layout: result.layout,
+    mode: 'weekday',
+    overwrite: true,
+    groupsText: groupsToText(result.layout, result.groups),
+    detectedStudentCount: result.detectedStudentCount,
+    placedStudentCount: result.placedStudentCount,
+    confidence: result.confidence,
+    date: result.info.date,
+    day: result.info.day,
+    weekday: result.info.weekday,
+    time: result.info.time,
+    campus: result.info.campus,
+    floor: result.info.floor,
+    room: result.info.room,
+    fullDate: result.info.fullDate
+  };
+};
+
+const renderOcrReview = (): void => {
+  const container = byId<HTMLDivElement>('ocrReviewList');
+  if (ocrDrafts.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = ocrDrafts
+    .map((draft) => {
+      const mismatch = Math.abs(draft.detectedStudentCount - draft.placedStudentCount);
+      const warning =
+        mismatch > 0
+          ? `<div class="error">识别人数(${draft.detectedStudentCount}) 与落座人数(${draft.placedStudentCount}) 不一致，请核对。</div>`
+          : `<div class="success">识别人数与落座人数一致：${draft.placedStudentCount}</div>`;
+      const errorLine = draft.errorMessage
+        ? `<div class="error">失败原因：${escapeHtml(draft.errorMessage)}</div>`
+        : '';
+
+      return `
+        <div class="ocr-card" data-id="${escapeHtml(draft.id)}">
+          <h3>${escapeHtml(draft.fileName)}</h3>
+          <div class="ocr-source">识别来源：${escapeHtml(draft.source)}</div>
+          ${errorLine}
+          <div class="ocr-card-grid">
+            <label>班级名<input data-field="className" value="${escapeHtml(draft.className)}" /></label>
+            <label>模式
+              <select data-field="mode">
+                <option value="weekday" ${draft.mode === 'weekday' ? 'selected' : ''}>周中</option>
+                <option value="weekend" ${draft.mode === 'weekend' ? 'selected' : ''}>周末</option>
+              </select>
+            </label>
+            <label>布局
+              <select data-field="layout">
+                <option value="circular" ${draft.layout === 'circular' ? 'selected' : ''}>圆桌</option>
+                <option value="rows" ${draft.layout === 'rows' ? 'selected' : ''}>三横排</option>
+                <option value="arc" ${draft.layout === 'arc' ? 'selected' : ''}>两横排</option>
+              </select>
+            </label>
+            <label>覆盖同名班级
+              <select data-field="overwrite">
+                <option value="true" ${draft.overwrite ? 'selected' : ''}>覆盖</option>
+                <option value="false" ${!draft.overwrite ? 'selected' : ''}>新建</option>
+              </select>
+            </label>
+            <label>月<input data-field="date" value="${escapeHtml(draft.date)}" /></label>
+            <label>日<input data-field="day" value="${escapeHtml(draft.day)}" /></label>
+            <label>星期<input data-field="weekday" value="${escapeHtml(draft.weekday)}" /></label>
+            <label>时间<input data-field="time" value="${escapeHtml(draft.time)}" /></label>
+            <label>校区<input data-field="campus" value="${escapeHtml(draft.campus)}" /></label>
+            <label>楼层<input data-field="floor" value="${escapeHtml(draft.floor)}" /></label>
+            <label>教室<input data-field="room" value="${escapeHtml(draft.room)}" /></label>
+          </div>
+          ${warning}
+          <label>座位文本（可修改）
+            <textarea data-field="groupsText">${escapeHtml(draft.groupsText)}</textarea>
+          </label>
+        </div>
+      `;
+    })
+    .join('');
+};
+
+const updateOcrProviderFields = (): void => {
+  const engine = byId<HTMLSelectElement>('ocrEngine').value;
+  const config = byId<HTMLDivElement>('ocrCloudConfig');
+  config.classList.toggle('hidden', engine === 'local');
+};
+
+const setOcrEngineStatus = (message: string, type: 'error' | 'success' | 'muted' = 'muted'): void => {
+  const status = byId<HTMLDivElement>('ocrEngineStatus');
+  status.classList.remove('error', 'success', 'muted');
+  status.classList.add(type);
+  status.textContent = message;
+};
+
+const syncOcrSettingsToForm = (): void => {
+  byId<HTMLSelectElement>('ocrEngine').value = ocrSettings.engine;
+  byId<HTMLInputElement>('allowLocalFallback').checked = ocrSettings.allowLocalFallback;
+  byId<HTMLInputElement>('tencentEndpoint').value = ocrSettings.tencentEndpoint;
+  byId<HTMLInputElement>('tencentRegion').value = ocrSettings.tencentRegion;
+  byId<HTMLSelectElement>('tencentAction').value = ocrSettings.tencentAction;
+  updateOcrProviderFields();
+};
+
+const readOcrSettingsFromForm = (): OCRSettings => {
+  const engine = byId<HTMLSelectElement>('ocrEngine').value as OCRSettings['engine'];
+  const settings: OCRSettings = {
+    engine: engine === 'local' || engine === 'tencent' || engine === 'hybrid' ? engine : 'hybrid',
+    allowLocalFallback: byId<HTMLInputElement>('allowLocalFallback').checked,
+    tencentEndpoint: byId<HTMLInputElement>('tencentEndpoint').value.trim().replace(/\/$/, '') || 'http://127.0.0.1:8787',
+    tencentRegion: byId<HTMLInputElement>('tencentRegion').value.trim() || 'ap-guangzhou',
+    tencentAction: byId<HTMLSelectElement>('tencentAction').value as OCRSettings['tencentAction']
+  };
+
+  if (
+    settings.tencentAction !== 'Auto' &&
+    settings.tencentAction !== 'ExtractDocMulti' &&
+    settings.tencentAction !== 'GeneralAccurateOCR' &&
+    settings.tencentAction !== 'GeneralBasicOCR'
+  ) {
+    settings.tencentAction = 'Auto';
+  }
+
+  ocrSettings = settings;
+  saveOCRSettings(settings);
+  return settings;
+};
+
+const checkOCRChannel = async (): Promise<void> => {
+  const settings = readOcrSettingsFromForm();
+
+  if (settings.engine === 'local') {
+    setOcrEngineStatus('当前为仅本地OCR模式，不会请求腾讯接口。', 'success');
+    return;
+  }
+
+  setOcrEngineStatus('检测中...');
+  try {
+    const endpoint = settings.tencentEndpoint.replace(/\/$/, '');
+    const [healthResp, capResp] = await Promise.all([
+      fetch(`${endpoint}/health`),
+      fetch(`${endpoint}/api/capabilities`)
+    ]);
+
+    const health = await healthResp.json().catch(() => ({} as Record<string, unknown>));
+    const capabilities = await capResp.json().catch(() => ({} as Record<string, unknown>));
+    if (!healthResp.ok || !capResp.ok) {
+      throw new Error('代理返回异常状态码');
+    }
+
+    const secretConfigured = capabilities?.secretConfigured === true;
+    const autoActions = Array.isArray(capabilities?.autoActions) ? capabilities.autoActions.join(' -> ') : 'unknown';
+    const serviceName = String(health?.service || 'tencent-ocr-proxy');
+    const fallbackText = settings.allowLocalFallback ? '开启' : '关闭';
+    const latestSource = ocrDrafts.length > 0 ? `；最近识别来源：${ocrDrafts[0].source}` : '';
+
+    if (!secretConfigured) {
+      setOcrEngineStatus('腾讯代理在线，但未检测到密钥配置（或代理未读取到环境变量）。', 'error');
+      return;
+    }
+
+    const selfTestResp = await fetch(`${endpoint}/api/self-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: settings.tencentAction,
+        region: settings.tencentRegion
+      })
+    });
+    const selfTest = await selfTestResp.json().catch(() => ({} as Record<string, unknown>));
+    if (!selfTestResp.ok) {
+      throw new Error('OCR自检请求失败');
+    }
+
+    if (selfTest?.ok === true) {
+      const action = String(selfTest?.action || 'unknown');
+      const warning = selfTest?.warning ? `；说明：${String(selfTest.warning)}` : '';
+      setOcrEngineStatus(
+        `${serviceName} 在线，权限正常。自检命中：${action}${warning}；自动策略：${autoActions}；本地回退：${fallbackText}${latestSource}`,
+        'success'
+      );
+      return;
+    }
+
+    const testError = String(selfTest?.error || '权限或接口不可用');
+    const triedActions = Array.isArray(selfTest?.tried)
+      ? selfTest.tried
+          .map((item: unknown) => String((item as { action?: string }).action || '').trim())
+          .filter(Boolean)
+          .join(' -> ')
+      : '';
+    setOcrEngineStatus(
+      `${serviceName} 在线但自检失败：${testError}${triedActions ? `；尝试接口：${triedActions}` : ''}；自动策略：${autoActions}；本地回退：${fallbackText}${latestSource}`,
+      'error'
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '检测失败';
+    setOcrEngineStatus(`检测失败：${message}`, 'error');
+  }
+};
+
+const showImageImportDialog = (): void => {
+  hideCreateClassDialog();
+  syncOcrSettingsToForm();
+  setOcrEngineStatus('点击“检测OCR通道”可验证当前是否走腾讯AI接口。');
+  byId<HTMLDivElement>('ocrProgress').textContent = '';
+  byId<HTMLInputElement>('imageFiles').value = '';
+  ocrDrafts = [];
+  renderOcrReview();
+  showDialog('imageImportDialog');
+};
+
+const hideImageImportDialog = (): void => {
+  hideDialog('imageImportDialog');
+};
+
+const startImageRecognition = async (): Promise<void> => {
+  const files = Array.from(byId<HTMLInputElement>('imageFiles').files || []);
+  const progress = byId<HTMLDivElement>('ocrProgress');
+  const settings = readOcrSettingsFromForm();
+
+  if (files.length === 0) {
+    progress.textContent = '请先选择至少一张图片。';
+    return;
+  }
+
+  ocrDrafts = [];
+  renderOcrReview();
+
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    progress.textContent = `正在识别 ${index + 1}/${files.length}: ${file.name}（${settings.engine}）`;
+
+    try {
+      const result = await recognizeClassFromImage(file, settings);
+      ocrDrafts.push(toDraft(result));
+      renderOcrReview();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '识别失败';
+      ocrDrafts.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        fileName: file.name,
+        source: `failed:${settings.engine}`,
+        errorMessage: message,
+        className: file.name.replace(/\.[^.]+$/, ''),
+        layout: 'circular',
+        mode: 'weekday',
+        overwrite: true,
+        groupsText: '',
+        detectedStudentCount: 0,
+        placedStudentCount: 0,
+        confidence: 0,
+        date: '',
+        day: '',
+        weekday: '',
+        time: '',
+        campus: '',
+        floor: '',
+        room: '',
+        fullDate: ''
+      });
+      progress.textContent = `图片 ${file.name} 识别失败：${message}`;
+      renderOcrReview();
+    }
+  }
+
+  progress.textContent = `识别完成，共 ${ocrDrafts.length} 条，可修改后确认导入。`;
+};
+
+const draftToModeData = (draft: OCRDraftView): ClassConfig[TimeMode] => {
+  const info: LocationInfo = {
+    ...makeEmptyLocationInfo(),
+    date: draft.date,
+    day: draft.day,
+    weekday: draft.weekday,
+    time: draft.time,
+    campus: draft.campus,
+    floor: draft.floor,
+    room: draft.room,
+    fullDate: draft.fullDate || monthDayToDateKey(draft.date, draft.day) || ''
+  };
+
+  if (draft.layout === 'circular') {
+    const parsedGroups = parseGroupsText('circular', draft.groupsText);
+    const groups = makeEmptyCircularGroups();
+    parsedGroups.slice(0, 6).forEach((group, index) => {
+      groups[index] = normalizeStudentList(group).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+    });
+
+    return {
+      layout: 'circular',
+      groups,
+      rowGroups: null,
+      arcGroups: null,
+      currentArrangement: 0,
+      locationInfo: info
+    };
+  }
+
+  if (draft.layout === 'rows') {
+    const parsedGroups = parseGroupsText('rows', draft.groupsText);
+    const slotMap = getRowsSlotMap(parsedGroups.filter((group) => group.length > 0).length || 4);
+    const slotGroups = Array.from({ length: 6 }, () => Array(6).fill(''));
+
+    slotMap.forEach((logicalIndex, slotIndex) => {
+      if (logicalIndex === null) {
+        return;
+      }
+      slotGroups[slotIndex] = normalizeStudentList(parsedGroups[logicalIndex] || []).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+    });
+
+    return {
+      layout: 'rows',
+      groups: null,
+      rowGroups: {
+        rows: [
+          { left: slotGroups[0], right: slotGroups[1] },
+          { left: slotGroups[2], right: slotGroups[3] },
+          { left: slotGroups[4], right: slotGroups[5] }
+        ]
+      },
+      arcGroups: null,
+      currentArrangement: 0,
+      locationInfo: info
+    };
+  }
+
+  const rows = parseGroupsText('arc', draft.groupsText);
+  return {
+    layout: 'arc',
+    groups: null,
+    rowGroups: null,
+    arcGroups: { rows: [rows[0], rows[1]] },
+    currentArrangement: 0,
+    locationInfo: info
+  };
+};
+
+const ensureNewName = (baseName: string): string => {
+  if (!state.classData[baseName]) {
+    return baseName;
+  }
+
+  let index = 1;
+  while (state.classData[`${baseName}_${index}`]) {
+    index += 1;
+  }
+
+  return `${baseName}_${index}`;
+};
+
+const confirmImageImport = (): void => {
+  if (ocrDrafts.length === 0) {
+    alert('没有可导入的识别结果');
+    return;
+  }
+
+  ocrDrafts.forEach((draft) => {
+    const classNameRaw = draft.className.trim() || draft.fileName.replace(/\.[^.]+$/, '');
+    const className = draft.overwrite ? classNameRaw : ensureNewName(classNameRaw);
+
+    ensureClassShell(className);
+    state.classData[className][draft.mode] = draftToModeData(draft);
+  });
+
+  persist();
+  updateClassSelect();
+  renderClassOverview();
+  hideImageImportDialog();
+  alert(`已导入 ${ocrDrafts.length} 条图片识别结果。`);
+};
+
+const showManualTuneDialog = (): void => {
+  const currentCount =
+    state.currentLayout === 'circular'
+      ? getCircularGroupCountFromGroups(state.groups)
+      : state.currentLayout === 'rows'
+        ? getRowsGroupCountFromGroups(state.rowGroups)
+        : 4;
+
+  byId<HTMLInputElement>('manualGroupCount').value = String(Math.max(1, currentCount));
+  byId<HTMLDivElement>('manualTuneError').textContent = '';
+  showDialog('manualTuneDialog');
+};
+
+const hideManualTuneDialog = (): void => {
+  hideDialog('manualTuneDialog');
+};
+
+const applyManualTune = (): void => {
+  const groupCount = Number.parseInt(byId<HTMLInputElement>('manualGroupCount').value, 10);
+  const students =
+    state.currentLayout === 'circular'
+      ? collectStudentsFromCircular(state.groups)
+      : state.currentLayout === 'rows'
+        ? collectStudentsFromRows(state.rowGroups)
+        : collectStudentsFromArc(state.arcGroups);
+
+  try {
+    const result = applyManualGrouping(state.currentLayout, groupCount, students);
+    state.groups = result.groups;
+    state.rowGroups = result.rowGroups;
+    state.arcGroups = result.arcGroups;
+    state.currentArrangement = 0;
+    refresh();
+    saveCurrentClassMode();
+    hideManualTuneDialog();
+  } catch (error) {
+    byId<HTMLDivElement>('manualTuneError').textContent = error instanceof Error ? error.message : '微调失败';
+  }
+};
+
+const showBatchImportDialog = (): void => {
+  byId<HTMLTextAreaElement>('batchImportData').value = '';
+  byId<HTMLDivElement>('batchImportError').textContent = '';
+  showDialog('batchImportDialog');
+};
+
+const hideBatchImportDialog = (): void => {
+  hideDialog('batchImportDialog');
+};
+
+const parseBatchLayout = (text: string): LayoutType => {
+  if (text.includes('三排') || text.includes('横排')) return 'rows';
+  if (text.includes('弧') || text.includes('两排')) return 'arc';
+  return 'circular';
+};
+
+const processBatchImport = (): void => {
+  const input = byId<HTMLTextAreaElement>('batchImportData').value;
+  const chunks = input.split('!').map((item) => item.trim()).filter(Boolean);
+  let successCount = 0;
+  const errors: string[] = [];
+
+  chunks.forEach((chunk) => {
+    try {
+      const lines = chunk.split('\n').map((line) => line.trim()).filter(Boolean);
+      const nameLine = lines.find((line) => line.startsWith('班级名称:'));
+      const className = nameLine?.split(':')[1]?.trim();
+      if (!className) {
+        throw new Error('缺少班级名称');
+      }
+
+      ensureClassShell(className);
+
+      let activeMode: TimeMode = 'weekday';
+      let activeLayout: LayoutType = 'circular';
+      let groupText: string[] = [];
+
+      const flush = (): void => {
+        if (groupText.length === 0) {
+          return;
+        }
+
+        const modeData = state.classData[className][activeMode];
+        const text = groupText.join('\n');
+
+        if (activeLayout === 'circular') {
+          const groups = parseGroupsText('circular', text);
+          modeData.layout = 'circular';
+          modeData.groups = makeEmptyCircularGroups();
+          groups.forEach((group, idx) => {
+            if (idx < 6) {
+              modeData.groups![idx] = normalizeStudentList(group).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
+            }
+          });
+          modeData.rowGroups = null;
+          modeData.arcGroups = null;
+        } else if (activeLayout === 'rows') {
+          const groups = parseGroupsText('rows', text);
+          const rowGroups = convertStudentsToRows(groups.flat());
+          modeData.layout = 'rows';
+          modeData.groups = null;
+          modeData.rowGroups = rowGroups;
+          modeData.arcGroups = null;
+        } else {
+          const rows = parseGroupsText('arc', text);
+          modeData.layout = 'arc';
+          modeData.groups = null;
+          modeData.rowGroups = null;
+          modeData.arcGroups = { rows: [rows[0], rows[1]] };
+        }
+
+        groupText = [];
+      };
+
+      lines.forEach((line) => {
+        if (line.startsWith('周中布局:')) {
+          flush();
+          activeMode = 'weekday';
+          activeLayout = parseBatchLayout(line);
+          return;
+        }
+
+        if (line.startsWith('周末布局:')) {
+          flush();
+          activeMode = 'weekend';
+          activeLayout = parseBatchLayout(line);
+          return;
+        }
+
+        if (line.startsWith('月:')) {
+          state.classData[className][activeMode].locationInfo.date = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('日:')) {
+          state.classData[className][activeMode].locationInfo.day = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('星期:')) {
+          state.classData[className][activeMode].locationInfo.weekday = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('时间:')) {
+          state.classData[className][activeMode].locationInfo.time = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('校区:')) {
+          state.classData[className][activeMode].locationInfo.campus = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('楼层:')) {
+          state.classData[className][activeMode].locationInfo.floor = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('教室:')) {
+          state.classData[className][activeMode].locationInfo.room = line.split(':')[1]?.trim() || '';
+          return;
+        }
+
+        if (line.startsWith('Group') || line.startsWith('第一排') || line.startsWith('第二排')) {
+          groupText.push(line);
+        }
+      });
+
+      flush();
+
+      (['weekday', 'weekend'] as TimeMode[]).forEach((mode) => {
+        const info = state.classData[className][mode].locationInfo;
+        info.fullDate = monthDayToDateKey(info.date, info.day) || '';
+      });
+
+      successCount += 1;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : '解析失败');
+    }
+  });
+
+  persist();
+  updateClassSelect();
+  renderClassOverview();
+
+  const errorBox = byId<HTMLDivElement>('batchImportError');
+  if (errors.length > 0) {
+    errorBox.className = 'error';
+    errorBox.innerHTML = `成功 ${successCount} 个，失败 ${errors.length} 个：<br>${errors.map((msg) => `• ${escapeHtml(msg)}`).join('<br>')}`;
+  } else {
+    errorBox.className = 'success';
+    errorBox.textContent = `成功导入 ${successCount} 个班级。`;
+    setTimeout(hideBatchImportDialog, 1300);
+  }
+};
+
+const setTextAlign = (align: 'left' | 'center' | 'right'): void => {
+  document.execCommand(`justify${align.charAt(0).toUpperCase()}${align.slice(1)}`, false);
+  updateAlignButtons();
+};
+
+const setVerticalAlign = (align: 'top' | 'middle' | 'bottom'): void => {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) {
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  const selected = range.commonAncestorContainer;
+
+  if (selected.nodeType === 3) {
+    const span = document.createElement('span');
+    span.style.verticalAlign = align;
+    range.surroundContents(span);
+  } else if (selected.nodeType === 1) {
+    (selected as HTMLElement).style.verticalAlign = align;
+  }
+
+  updateAlignButtons();
+};
+
+const updateAlignButtons = (): void => {
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.text-align-group button');
+  buttons.forEach((button) => button.classList.remove('active'));
+
+  const alignment = document.queryCommandState('justifyLeft')
+    ? 'left'
+    : document.queryCommandState('justifyCenter')
+      ? 'center'
+      : document.queryCommandState('justifyRight')
+        ? 'right'
+        : '';
+
+  if (!alignment) {
+    return;
+  }
+
+  const activeButton = document.querySelector<HTMLButtonElement>(`[onclick*=\"setTextAlign('${alignment}')\"]`);
+  if (activeButton) {
+    activeButton.classList.add('active');
+  }
+};
+
+const updateTime = (): void => {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const input = byId<HTMLInputElement>('time');
+  if (!input.value) {
+    input.value = `${hours}:${minutes}`;
+  }
+};
+
+const bindNotes = (): void => {
+  byId<HTMLSelectElement>('noteFontSize').addEventListener('change', (event) => {
+    document.execCommand('fontSize', false, '7');
+    const fonts = document.getElementsByTagName('font');
+    const target = event.target as HTMLSelectElement;
+
+    for (let idx = 0; idx < fonts.length; idx += 1) {
+      if (fonts[idx].size === '7') {
+        fonts[idx].removeAttribute('size');
+        fonts[idx].style.fontSize = `${target.value}px`;
+      }
+    }
+  });
+
+  byId<HTMLInputElement>('noteColor').addEventListener('change', (event) => {
+    const target = event.target as HTMLInputElement;
+    document.execCommand('foreColor', false, target.value);
+  });
+
+  notes().addEventListener('paste', (event) => {
+    event.preventDefault();
+    const clipboard = (event as ClipboardEvent).clipboardData;
+    if (!clipboard) {
+      return;
+    }
+
+    for (const item of clipboard.items) {
+      if (item.type.startsWith('image')) {
+        const file = item.getAsFile();
+        if (!file) {
+          continue;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (loadEvent) => {
+          const img = document.createElement('img');
+          img.src = String(loadEvent.target?.result || '');
+          img.style.maxWidth = '100%';
+          img.style.height = 'auto';
+          img.style.border = '1px solid #ddd';
+          img.style.margin = '10px auto';
+          img.style.display = 'block';
+          notes().appendChild(img);
+        };
+        reader.readAsDataURL(file);
+        continue;
+      }
+
+      if (item.type === 'text/plain') {
+        item.getAsString((text) => {
+          document.execCommand('insertText', false, text);
+        });
+      }
+    }
+  });
+};
+
+const bindOcrReviewEvents = (): void => {
+  byId<HTMLDivElement>('ocrReviewList').addEventListener('input', (event) => {
+    const target = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    const field = target.dataset.field;
+    const card = target.closest<HTMLElement>('.ocr-card');
+    const id = card?.dataset.id;
+
+    if (!field || !id) {
+      return;
+    }
+
+    const draft = ocrDrafts.find((item) => item.id === id);
+    if (!draft) {
+      return;
+    }
+
+    if (field === 'overwrite') {
+      draft.overwrite = target.value === 'true';
+      return;
+    }
+
+    if (field === 'layout') {
+      draft.layout = target.value as LayoutType;
+      return;
+    }
+
+    if (field === 'mode') {
+      draft.mode = target.value as TimeMode;
+      return;
+    }
+
+    switch (field) {
+      case 'className':
+        draft.className = target.value;
+        break;
+      case 'groupsText':
+        draft.groupsText = target.value;
+        break;
+      case 'date':
+        draft.date = target.value;
+        break;
+      case 'day':
+        draft.day = target.value;
+        break;
+      case 'weekday':
+        draft.weekday = target.value;
+        break;
+      case 'time':
+        draft.time = target.value;
+        break;
+      case 'campus':
+        draft.campus = target.value;
+        break;
+      case 'floor':
+        draft.floor = target.value;
+        break;
+      case 'room':
+        draft.room = target.value;
+        break;
+      default:
+        break;
+    }
+  });
+};
+
+const bindHomeEvents = (): void => {
+  byId<HTMLDivElement>('welcomeBox').addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    const input = window.prompt('修改用户名', state.userProfile.username);
+    const username = input?.trim();
+    if (!username) {
+      return;
+    }
+    state.userProfile.username = username;
+    saveProfile();
+    updateWelcome();
+  });
+
+  byId<HTMLSelectElement>('themeSelect').addEventListener('change', (event) => {
+    const value = (event.target as HTMLSelectElement).value as ThemeName;
+    state.userProfile.theme = value;
+    saveProfile();
+    applyTheme(value);
+  });
+
+  byId<HTMLDivElement>('homeClassList').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const button = target.closest<HTMLButtonElement>('[data-open-class]');
+    if (!button) {
+      return;
+    }
+
+    const className = button.dataset.openClass;
+    if (!className) {
+      return;
+    }
+
+    openClassInEditor(className);
+  });
+};
+
+const bindCoreEvents = (): void => {
+  byId<HTMLInputElement>('date').addEventListener('change', syncDateField);
+  byId<HTMLInputElement>('day').addEventListener('change', syncDateField);
+
+  byId<HTMLInputElement>('circularLayout').addEventListener('change', updateLayoutDescription);
+  byId<HTMLInputElement>('rowsLayout').addEventListener('change', updateLayoutDescription);
+  byId<HTMLInputElement>('arcLayout').addEventListener('change', updateLayoutDescription);
+  byId<HTMLSelectElement>('ocrEngine').addEventListener('change', () => {
+    updateOcrProviderFields();
+    readOcrSettingsFromForm();
+  });
+  byId<HTMLInputElement>('allowLocalFallback').addEventListener('change', () => {
+    readOcrSettingsFromForm();
+  });
+  byId<HTMLInputElement>('tencentEndpoint').addEventListener('change', () => {
+    readOcrSettingsFromForm();
+  });
+  byId<HTMLInputElement>('tencentRegion').addEventListener('change', () => {
+    readOcrSettingsFromForm();
+  });
+  byId<HTMLSelectElement>('tencentAction').addEventListener('change', () => {
+    readOcrSettingsFromForm();
+  });
+};
+
+interface AppWindow extends Window {
+  loadClass: () => void;
+  toggleTime: (mode: TimeMode) => void;
+  showSaveDialog: () => void;
+  hideSaveDialog: () => void;
+  saveClass: () => void;
+  deleteCurrentClass: () => void;
+  showImportDialog: () => void;
+  hideImportDialog: () => void;
+  importStudents: () => void;
+  generateSeating: () => void;
+  toggleEditMode: () => void;
+  setTextAlign: (align: 'left' | 'center' | 'right') => void;
+  setVerticalAlign: (align: 'top' | 'middle' | 'bottom') => void;
+  showBatchImportDialog: () => void;
+  hideBatchImportDialog: () => void;
+  processBatchImport: () => void;
+  toggleLayout: () => void;
+  goHome: () => void;
+  generateWeeklySeating: () => void;
+  showCreateClassDialog: () => void;
+  hideCreateClassDialog: () => void;
+  showImageImportDialog: () => void;
+  hideImageImportDialog: () => void;
+  startImageRecognition: () => Promise<void>;
+  checkOCRChannel: () => Promise<void>;
+  confirmImageImport: () => void;
+  showManualTuneDialog: () => void;
+  hideManualTuneDialog: () => void;
+  applyManualTune: () => void;
+}
+
+const exposeToWindow = (): void => {
+  const w = window as unknown as AppWindow;
+  w.loadClass = loadClass;
+  w.toggleTime = toggleTime;
+  w.showSaveDialog = showSaveDialog;
+  w.hideSaveDialog = hideSaveDialog;
+  w.saveClass = saveClass;
+  w.deleteCurrentClass = deleteCurrentClass;
+  w.showImportDialog = showImportDialog;
+  w.hideImportDialog = hideImportDialog;
+  w.importStudents = importStudents;
+  w.generateSeating = generateSeating;
+  w.toggleEditMode = toggleEditMode;
+  w.setTextAlign = setTextAlign;
+  w.setVerticalAlign = setVerticalAlign;
+  w.showBatchImportDialog = showBatchImportDialog;
+  w.hideBatchImportDialog = hideBatchImportDialog;
+  w.processBatchImport = processBatchImport;
+  w.toggleLayout = toggleLayout;
+  w.goHome = goHome;
+  w.generateWeeklySeating = generateWeeklySeating;
+  w.showCreateClassDialog = showCreateClassDialog;
+  w.hideCreateClassDialog = hideCreateClassDialog;
+  w.showImageImportDialog = showImageImportDialog;
+  w.hideImageImportDialog = hideImageImportDialog;
+  w.startImageRecognition = startImageRecognition;
+  w.checkOCRChannel = checkOCRChannel;
+  w.confirmImageImport = confirmImageImport;
+  w.showManualTuneDialog = showManualTuneDialog;
+  w.hideManualTuneDialog = hideManualTuneDialog;
+  w.applyManualTune = applyManualTune;
+};
+
+const loadProfile = (): void => {
+  state.userProfile = loadUserProfile();
+  ensureUsername();
+  applyTheme(state.userProfile.theme);
+  updateWelcome();
+};
+
+export const initApp = (): void => {
+  exposeToWindow();
+  loadProfile();
+  loadSavedData();
+  bindCoreEvents();
+  bindNotes();
+  bindOcrReviewEvents();
+  bindHomeEvents();
+  updateLayoutDescription();
+  updateTime();
+  setInterval(updateTime, 60000);
+  refresh();
+  renderClassOverview();
+  setCurrentView('home');
+};
