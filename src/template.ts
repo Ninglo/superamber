@@ -8,17 +8,27 @@ export const appTemplate = `
         <p id="todayText">今天是</p>
       </div>
       <div class="theme-switch">
+        <label for="usernameInput">用户名</label>
+        <div class="username-editor">
+          <input id="usernameInput" placeholder="输入用户名" />
+          <button type="button" id="saveUsernameBtn">保存</button>
+        </div>
         <label for="themeSelect">主题</label>
         <select id="themeSelect">
+          <option value="paper">默认白</option>
           <option value="classic">经典蓝</option>
-          <option value="sky">天空贴纸</option>
-          <option value="sunny">阳光卡通</option>
+          <option value="mint">森林绿</option>
+          <option value="rose">樱花粉</option>
+          <option value="apricot">杏桃橙</option>
+          <option value="golden">奶油黄</option>
+          <option value="plum">葡萄紫</option>
         </select>
       </div>
     </header>
 
     <section class="home-actions">
       <button class="primary" id="generateWeekBtn" onclick="generateWeeklySeating()">生成第<span id="homeWeekNum">1</span>周座位表</button>
+      <button id="undoWeekBtn" onclick="undoWeeklySeating()">撤回上次周轮转</button>
       <button id="newClassBtn" onclick="showCreateClassDialog()">新建班级座位表</button>
     </section>
 
@@ -30,17 +40,36 @@ export const appTemplate = `
 
   <section class="editor-view hidden" id="editorView">
     <div class="editor-stage">
-      <button class="back-home" onclick="goHome()">返回主页</button>
+      <div class="editor-topbar">
+        <button class="back-home" onclick="goHome()">返回主页</button>
+        <button type="button" class="editor-tools-toggle" id="editorToolsToggle">隐藏工具</button>
+      </div>
 
       <div class="class-selector">
-        <select id="classSelect" onchange="loadClass()">
-          <option value="">选择班级...</option>
-        </select>
+        <div class="class-selector-main">
+          <label class="class-selector-label" for="classSelect">当前班级</label>
+          <select id="classSelect" onchange="loadClass()">
+            <option value="">选择班级...</option>
+          </select>
+        </div>
+        <div class="class-theme-switch">
+          <label class="class-selector-label" for="editorThemeSelect">班级主题</label>
+          <select id="editorThemeSelect">
+            <option value="paper">默认白</option>
+            <option value="classic">经典蓝</option>
+            <option value="mint">森林绿</option>
+            <option value="rose">樱花粉</option>
+            <option value="apricot">杏桃橙</option>
+            <option value="golden">奶油黄</option>
+            <option value="plum">葡萄紫</option>
+          </select>
+        </div>
         <div class="time-toggle">
           <button onclick="toggleTime('weekday')" id="weekdayBtn" class="active">周中</button>
           <button onclick="toggleTime('weekend')" id="weekendBtn">周末</button>
         </div>
-        <button class="delete-btn" onclick="deleteCurrentClass()">删除</button>
+        <button class="rename-btn" onclick="renameCurrentClass()">改班号</button>
+        <button class="delete-btn subtle" onclick="deleteCurrentClass()">删除当前班级</button>
       </div>
 
       <div class="main-content">
@@ -82,6 +111,13 @@ export const appTemplate = `
 
         <div class="right-section">
           <div class="notes-section">
+            <div class="notes-header">
+              <div>
+                <strong>备注栏</strong>
+                <span>右侧调宽，底边调高，顶部和日期信息区对齐</span>
+              </div>
+              <button type="button" class="notes-toolbar-toggle" id="notesToolbarToggle">显示设置</button>
+            </div>
             <div class="notes-toolbar">
               <select id="noteFontSize">
                 <option value="12">12px</option>
@@ -104,7 +140,9 @@ export const appTemplate = `
               </div>
             </div>
             <div class="notes-content" id="notes" contenteditable="true" placeholder="在此添加备注内容..."></div>
+            <div class="notes-height-handle" id="notesHeightHandle" title="拖动调整备注栏高度"></div>
           </div>
+          <div class="notes-width-handle" id="notesWidthHandle" title="拖动调整备注栏宽度"></div>
         </div>
       </div>
     </div>
@@ -115,11 +153,14 @@ export const appTemplate = `
       <button onclick="showImportDialog()">文字导入</button>
       <button onclick="showImageImportDialog()">图片导入</button>
       <button onclick="showManualTuneDialog()">手动微调</button>
+      <button onclick="showPreviousWeekDialog()">看看上周座位</button>
+      <button onclick="showRosterDialog()">完整名单</button>
+      <button id="syncOtherModeBtn" onclick="copyCurrentToOtherMode()">同步到另一时段</button>
       <div class="edit-mode">
         <button onclick="toggleEditMode()">编辑模式</button>
       </div>
       <button onclick="toggleLayout()">切换布局</button>
-      <button onclick="generateSeating()">下一次轮换</button>
+      <button onclick="generateSeating()">手动轮转</button>
     </div>
   </section>
 
@@ -226,15 +267,41 @@ export const appTemplate = `
 
   <div class="dialog" id="manualTuneDialog">
     <h2>手动微调</h2>
-    <p>设置当前布局小组数量并自动重新均分学生</p>
+    <p class="manual-tips">提示：先点一个座位，再点另一个座位可直接换位；也可以直接改名字，或新增学生后放进空位。</p>
     <div class="manual-row">
       <label for="manualGroupCount">组数</label>
       <input type="number" id="manualGroupCount" min="1" max="6" value="6" />
+      <button type="button" onclick="applyManualGroupCount()">按组数重排</button>
     </div>
+    <div class="manual-row">
+      <label for="manualNewStudent">新增学生</label>
+      <input type="text" id="manualNewStudent" placeholder="输入新学生名字" />
+      <button type="button" onclick="addManualTuneStudent()">加入空位</button>
+    </div>
+    <div id="manualSeatEditor" class="manual-seat-editor"></div>
     <div id="manualTuneError" class="error"></div>
     <div class="buttons">
       <button class="cancel" onclick="hideManualTuneDialog()">取消</button>
-      <button class="confirm" onclick="applyManualTune()">应用</button>
+      <button class="confirm" onclick="applyManualTune()">保存微调</button>
+    </div>
+  </div>
+
+  <div class="dialog previous-week-dialog" id="previousWeekDialog">
+    <h2>看看上周座位</h2>
+    <p id="previousWeekSummary" class="muted"></p>
+    <div id="previousWeekPreview" class="previous-week-preview"></div>
+    <div class="buttons">
+      <button class="cancel" onclick="hidePreviousWeekDialog()">关闭</button>
+      <button class="confirm" onclick="restorePreviousWeek()">恢复为上周版本</button>
+    </div>
+  </div>
+
+  <div class="dialog roster-dialog" id="rosterDialog">
+    <h2>完整名单</h2>
+    <p id="rosterSummary" class="muted"></p>
+    <div id="rosterList" class="roster-list"></div>
+    <div class="buttons">
+      <button class="confirm" onclick="hideRosterDialog()">关闭</button>
     </div>
   </div>
 

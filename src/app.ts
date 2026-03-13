@@ -23,13 +23,14 @@ import {
   layoutMaxStudents,
   normalizeStudentList,
   placeCentered,
+  rotateCircularGroupOrderForWeek,
   rotateArcLayoutForWeek,
   rotateCircularLayoutForWeek,
   rotateRowsLayoutForWeek
 } from './layouts';
 import { recognizeClassFromImage, type OCRClassDraft } from './ocr';
 import { loadOCRSettings, saveOCRSettings } from './ocrSettings';
-import { refreshSeating } from './render';
+import { refreshSeating, renderModePreview } from './render';
 import {
   createInitialState,
   makeClassShell,
@@ -38,8 +39,16 @@ import {
   makeEmptyLocationInfo,
   makeEmptyRowGroups
 } from './state';
-import { loadClassData, loadUserProfile, saveClassData, saveUserProfile } from './storage';
-import type { ArcGroups, ClassConfig, LayoutType, LocationInfo, OCRSettings, ThemeName, TimeMode } from './types';
+import {
+  clearBatchUndoData,
+  loadBatchUndoData,
+  loadClassData,
+  loadUserProfile,
+  saveBatchUndoData,
+  saveClassData,
+  saveUserProfile
+} from './storage';
+import type { ArcGroups, ClassConfig, ClassData, ClassSnapshot, LayoutType, LocationInfo, OCRSettings, ThemeName, TimeMode } from './types';
 
 interface OCRDraftView {
   id: string;
@@ -64,9 +73,24 @@ interface OCRDraftView {
   fullDate: string;
 }
 
+type ManualSeatRef =
+  | { key: string; label: string; kind: 'circular'; groupIndex: number; seatIndex: number }
+  | { key: string; label: string; kind: 'rows'; rowIndex: number; side: 'left' | 'right'; seatIndex: number }
+  | { key: string; label: string; kind: 'arc'; rowIndex: number; seatIndex: number };
+
+interface ManualTuneDraft {
+  layout: LayoutType;
+  groups: string[][];
+  rowGroups: ReturnType<typeof makeEmptyRowGroups>;
+  arcGroups: ArcGroups;
+  groupCount: number;
+  selectedSeatKey: string | null;
+}
+
 const state = createInitialState();
 let ocrDrafts: OCRDraftView[] = [];
 let ocrSettings: OCRSettings = loadOCRSettings();
+let manualTuneDraft: ManualTuneDraft | null = null;
 
 const byId = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
@@ -80,6 +104,8 @@ const classSelect = (): HTMLSelectElement => byId<HTMLSelectElement>('classSelec
 const headerClassName = (): HTMLInputElement => byId<HTMLInputElement>('headerClassName');
 const notes = (): HTMLDivElement => byId<HTMLDivElement>('notes');
 const classroom = (): HTMLDivElement => byId<HTMLDivElement>('classroom');
+
+const deepCopy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const showDialog = (id: string): void => {
   byId<HTMLDivElement>(id).style.display = 'block';
@@ -108,9 +134,23 @@ const persist = (): void => {
 };
 
 const applyTheme = (theme: ThemeName): void => {
-  document.body.classList.remove('theme-classic', 'theme-sky', 'theme-sunny');
+  document.body.classList.remove(
+    'theme-paper',
+    'theme-classic',
+    'theme-mint',
+    'theme-rose',
+    'theme-apricot',
+    'theme-golden',
+    'theme-plum'
+  );
   document.body.classList.add(`theme-${theme}`);
   byId<HTMLSelectElement>('themeSelect').value = theme;
+};
+
+const getClassTheme = (className: string): ThemeName => state.classData[className]?.theme || state.userProfile.theme || 'paper';
+
+const syncEditorThemeSelect = (theme: ThemeName): void => {
+  byId<HTMLSelectElement>('editorThemeSelect').value = theme;
 };
 
 const ensureUsername = (): void => {
@@ -130,6 +170,7 @@ const updateWelcome = (): void => {
   byId<HTMLSpanElement>('homeWeekNum').textContent = String(week);
   byId<HTMLHeadingElement>('welcomeText').textContent = `Welcome ${state.userProfile.username}!`;
   byId<HTMLParagraphElement>('todayText').textContent = `今天是 ${formatTodayLabel()}，第${week}周，${getChineseWeekday()}`;
+  byId<HTMLInputElement>('usernameInput').value = state.userProfile.username;
 };
 
 const countStudentsInMode = (mode: ClassConfig[TimeMode]): number => {
@@ -142,33 +183,88 @@ const countStudentsInMode = (mode: ClassConfig[TimeMode]): number => {
   return collectStudentsFromArc(mode.arcGroups || makeEmptyArcGroups()).length;
 };
 
+const updateSyncModeButton = (): void => {
+  const button = byId<HTMLButtonElement>('syncOtherModeBtn');
+  const className = classSelect().value.trim();
+  const targetMode: TimeMode = state.currentTimeMode === 'weekday' ? 'weekend' : 'weekday';
+  const targetLabel = targetMode === 'weekday' ? '周中' : '周末';
+
+  if (!className || !state.classData[className]) {
+    button.textContent = `同步到${targetLabel}`;
+    button.disabled = true;
+    return;
+  }
+
+  const currentMode = state.classData[className][state.currentTimeMode];
+  const otherMode = state.classData[className][targetMode];
+  const currentCount = countStudentsInMode(currentMode);
+  const targetCount = countStudentsInMode(otherMode);
+
+  button.textContent = `同步到${targetLabel}`;
+  button.disabled = currentCount === 0 || targetCount > 0;
+  button.title = targetCount > 0 ? `${targetLabel}已有名单，避免覆盖，当前不允许直接同步。` : '';
+};
+
+const layoutLabel = (layout: LayoutType): string => {
+  if (layout === 'rows') return '三横排';
+  if (layout === 'arc') return '圆弧';
+  return '圆桌';
+};
+
+const formatModeMeta = (mode: ClassConfig[TimeMode]): string => {
+  const info = sanitizeLocationInfo(mode.locationInfo);
+  const parts = [info.weekday, info.time, info.campus, info.room].filter(Boolean);
+  return parts.join(' · ') || '未设置';
+};
+
 const renderClassOverview = (): void => {
   const container = byId<HTMLDivElement>('homeClassList');
   const classNames = Object.keys(state.classData).sort();
 
   if (classNames.length === 0) {
-    container.innerHTML = '<div class="class-row empty">暂无班级，请点击“新建班级座位表”</div>';
+    container.innerHTML = '<div class="class-card empty">暂无班级，请点击“新建班级座位表”</div>';
+    updateBatchUndoButton();
+    updateSyncModeButton();
     return;
   }
 
-  const rows = classNames
+  const cards = classNames
     .map((className) => {
       const config = state.classData[className];
       const weekdayCount = countStudentsInMode(config.weekday);
       const weekendCount = countStudentsInMode(config.weekend);
       return `
-        <div class="class-row">
-          <div><strong>${escapeHtml(className)}</strong></div>
-          <div>周中：${escapeHtml(config.weekday.layout)}</div>
-          <div>周末：${escapeHtml(config.weekend.layout)}</div>
-          <div>${weekdayCount}/${weekendCount} 人</div>
-          <button data-open-class="${escapeHtml(className)}">进入编辑</button>
-        </div>
+        <article class="class-card" data-open-class="${escapeHtml(className)}">
+          <div class="class-card-header">
+            <strong>${escapeHtml(className)}</strong>
+            <span>${weekdayCount + weekendCount} 人次</span>
+          </div>
+          <div class="class-card-meta">
+            <span class="mode-chip">周中</span>
+            <span>${escapeHtml(layoutLabel(config.weekday.layout))}</span>
+            <span>${weekdayCount} 人</span>
+          </div>
+          <div class="class-card-detail">${escapeHtml(formatModeMeta(config.weekday))}</div>
+          <div class="class-card-meta">
+            <span class="mode-chip weekend">周末</span>
+            <span>${escapeHtml(layoutLabel(config.weekend.layout))}</span>
+            <span>${weekendCount} 人</span>
+          </div>
+          <div class="class-card-detail">${escapeHtml(formatModeMeta(config.weekend))}</div>
+          <button>进入编辑</button>
+        </article>
       `;
     })
     .join('');
 
-  container.innerHTML = rows;
+  container.innerHTML = cards;
+  updateBatchUndoButton();
+  updateSyncModeButton();
+};
+
+const updateBatchUndoButton = (): void => {
+  const button = byId<HTMLButtonElement>('undoWeekBtn');
+  button.disabled = !loadBatchUndoData();
 };
 
 const setCurrentView = (view: 'home' | 'editor'): void => {
@@ -223,10 +319,13 @@ const sanitizeModeData = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] =>
     (mode.groups || []).slice(0, 6).forEach((group, idx) => {
       base[idx] = normalizeStudentList(group).slice(0, 6).concat(Array(6).fill('')).slice(0, 6);
     });
+    const defaultOrder = [1, 2, 3, 4, 5, 6];
+    const groupOrder = (mode.groupOrder || defaultOrder).slice(0, 6).concat(defaultOrder).slice(0, 6);
 
     return {
       layout: 'circular',
       groups: base,
+      groupOrder,
       rowGroups: null,
       arcGroups: null,
       currentArrangement: mode.currentArrangement || 0,
@@ -245,6 +344,7 @@ const sanitizeModeData = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] =>
     return {
       layout: 'rows',
       groups: null,
+      groupOrder: null,
       rowGroups: base,
       arcGroups: null,
       currentArrangement: mode.currentArrangement || 0,
@@ -261,6 +361,7 @@ const sanitizeModeData = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] =>
   return {
     layout: 'arc',
     groups: null,
+    groupOrder: null,
     rowGroups: null,
     arcGroups: arc,
     currentArrangement: mode.currentArrangement || 0,
@@ -268,18 +369,41 @@ const sanitizeModeData = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] =>
   };
 };
 
-const loadSavedData = (): void => {
-  const loaded = loadClassData();
+const sanitizeClassSnapshot = (snapshot: Partial<ClassSnapshot> | undefined): ClassSnapshot => {
+  const shell: ClassConfig = makeClassShell('circular', state.userProfile.theme);
+  return {
+    theme: snapshot?.theme || state.userProfile.theme || 'paper',
+    weekday: sanitizeModeData(snapshot?.weekday || shell.weekday),
+    weekend: sanitizeModeData(snapshot?.weekend || shell.weekend)
+  };
+};
+
+const snapshotFromConfig = (config: ClassConfig): ClassSnapshot => ({
+  theme: config.theme,
+  weekday: deepCopy(config.weekday),
+  weekend: deepCopy(config.weekend)
+});
+
+const sanitizeClassDataMap = (loaded: ClassData): ClassData => {
   const sanitized: Record<string, ClassConfig> = {};
 
   Object.entries(loaded).forEach(([className, config]) => {
-    const shell = makeClassShell();
-    shell.weekday = sanitizeModeData(config.weekday || shell.weekday);
-    shell.weekend = sanitizeModeData(config.weekend || shell.weekend);
+    const shell: ClassConfig = makeClassShell('circular', state.userProfile.theme);
+    const snapshot = sanitizeClassSnapshot(config);
+    shell.theme = snapshot.theme;
+    shell.weekday = snapshot.weekday;
+    shell.weekend = snapshot.weekend;
+    shell.previousWeek = config.previousWeek ? sanitizeClassSnapshot(config.previousWeek) : null;
     sanitized[className] = shell;
   });
 
-  state.classData = sanitized;
+  return sanitized;
+};
+
+const loadSavedData = (): void => {
+  const loaded = loadClassData();
+
+  state.classData = sanitizeClassDataMap(loaded);
   updateClassSelect();
 };
 
@@ -318,6 +442,7 @@ const setLocationInfo = (info: Partial<LocationInfo> | undefined): void => {
 const captureCurrentModeData = (): ClassConfig[TimeMode] => ({
   layout: state.currentLayout,
   groups: state.currentLayout === 'circular' ? JSON.parse(JSON.stringify(state.groups)) : null,
+  groupOrder: state.currentLayout === 'circular' ? [...state.currentGroupOrder] : null,
   rowGroups: state.currentLayout === 'rows' ? JSON.parse(JSON.stringify(state.rowGroups)) : null,
   arcGroups: state.currentLayout === 'arc' ? JSON.parse(JSON.stringify(state.arcGroups)) : null,
   currentArrangement: state.currentArrangement,
@@ -326,7 +451,7 @@ const captureCurrentModeData = (): ClassConfig[TimeMode] => ({
 
 const ensureClassShell = (className: string): void => {
   if (!state.classData[className]) {
-    state.classData[className] = makeClassShell(state.currentLayout);
+    state.classData[className] = makeClassShell(state.currentLayout, state.userProfile.theme);
   }
 };
 
@@ -338,11 +463,13 @@ const saveCurrentClassMode = (): void => {
 
   ensureClassShell(className);
   state.classData[className][state.currentTimeMode] = captureCurrentModeData();
+  state.classData[className].theme = getClassTheme(className);
   persist();
 };
 
 const resetLayoutData = (): void => {
   state.groups = makeEmptyCircularGroups();
+  state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
   state.rowGroups = makeEmptyRowGroups();
   state.arcGroups = makeEmptyArcGroups();
 };
@@ -387,8 +514,11 @@ const loadClass = (): void => {
     state.currentArrangement = 0;
     setLocationInfo(makeEmptyLocationInfo());
     headerClassName().value = className || '';
+    syncEditorThemeSelect(state.userProfile.theme);
+    applyTheme(state.userProfile.theme);
     setLayoutClass(state.currentLayout);
     refresh();
+    updateSyncModeButton();
     return;
   }
 
@@ -397,22 +527,29 @@ const loadClass = (): void => {
 
   if (state.currentLayout === 'circular') {
     state.groups = JSON.parse(JSON.stringify(data.groups || makeEmptyCircularGroups()));
+    state.currentGroupOrder = [...(data.groupOrder || [1, 2, 3, 4, 5, 6])];
     state.rowGroups = makeEmptyRowGroups();
     state.arcGroups = makeEmptyArcGroups();
   } else if (state.currentLayout === 'rows') {
     state.rowGroups = JSON.parse(JSON.stringify(data.rowGroups || makeEmptyRowGroups()));
     state.groups = makeEmptyCircularGroups();
+    state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
     state.arcGroups = makeEmptyArcGroups();
   } else {
     state.arcGroups = JSON.parse(JSON.stringify(data.arcGroups || makeEmptyArcGroups()));
     state.groups = makeEmptyCircularGroups();
+    state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
     state.rowGroups = makeEmptyRowGroups();
   }
 
   setLocationInfo(data.locationInfo);
   headerClassName().value = className;
+  const classTheme = getClassTheme(className);
+  syncEditorThemeSelect(classTheme);
+  applyTheme(classTheme);
   setLayoutClass(state.currentLayout);
   refresh();
+  updateSyncModeButton();
 };
 
 const openClassInEditor = (className: string): void => {
@@ -426,6 +563,7 @@ const openClassInEditor = (className: string): void => {
 
 const goHome = (): void => {
   saveCurrentClassMode();
+  applyTheme(state.userProfile.theme);
   setCurrentView('home');
 };
 
@@ -435,6 +573,46 @@ const toggleTime = (mode: TimeMode): void => {
   byId<HTMLButtonElement>('weekdayBtn').className = mode === 'weekday' ? 'active' : '';
   byId<HTMLButtonElement>('weekendBtn').className = mode === 'weekend' ? 'active' : '';
   loadClass();
+};
+
+const copyCurrentToOtherMode = (): void => {
+  const className = classSelect().value.trim();
+  if (!className) {
+    alert('请先选择班级。');
+    return;
+  }
+
+  ensureClassShell(className);
+  saveCurrentClassMode();
+
+  const targetMode: TimeMode = state.currentTimeMode === 'weekday' ? 'weekend' : 'weekday';
+  const targetLabel = targetMode === 'weekday' ? '周中' : '周末';
+  const currentModeData = state.classData[className][state.currentTimeMode];
+  const targetModeData = state.classData[className][targetMode];
+
+  if (countStudentsInMode(currentModeData) === 0) {
+    alert('当前时段还没有可复制的名单。');
+    return;
+  }
+
+  if (countStudentsInMode(targetModeData) > 0) {
+    alert(`${targetLabel}已经有名单了，为避免覆盖，当前不允许直接同步。`);
+    return;
+  }
+
+  state.classData[className][targetMode] = {
+    layout: currentModeData.layout,
+    groups: currentModeData.layout === 'circular' ? deepCopy(currentModeData.groups) : null,
+    groupOrder: currentModeData.layout === 'circular' ? [...(currentModeData.groupOrder || [1, 2, 3, 4, 5, 6])] : null,
+    rowGroups: currentModeData.layout === 'rows' ? deepCopy(currentModeData.rowGroups) : null,
+    arcGroups: currentModeData.layout === 'arc' ? deepCopy(currentModeData.arcGroups) : null,
+    currentArrangement: 0,
+    locationInfo: makeEmptyLocationInfo()
+  };
+
+  persist();
+  updateSyncModeButton();
+  alert(`已把当前座位和名单同步到${targetLabel}，日期和场地信息保持空白。`);
 };
 
 const showSaveDialog = (): void => {
@@ -483,8 +661,39 @@ const deleteCurrentClass = (): void => {
   state.currentLayout = 'circular';
   resetLayoutData();
   state.currentArrangement = 0;
+  syncEditorThemeSelect(state.userProfile.theme);
+  applyTheme(state.userProfile.theme);
   setLocationInfo(makeEmptyLocationInfo());
   refresh();
+};
+
+const renameCurrentClass = (): void => {
+  const oldName = classSelect().value.trim();
+  if (!oldName) {
+    alert('请先选择班级。');
+    return;
+  }
+
+  saveCurrentClassMode();
+  const input = window.prompt('输入新的班号', oldName);
+  const newName = input?.trim();
+  if (!newName || newName === oldName) {
+    return;
+  }
+
+  if (state.classData[newName]) {
+    alert('这个班号已经存在了，请换一个名称。');
+    return;
+  }
+
+  state.classData[newName] = state.classData[oldName];
+  delete state.classData[oldName];
+  persist();
+  updateClassSelect();
+  renderClassOverview();
+  classSelect().value = newName;
+  headerClassName().value = newName;
+  loadClass();
 };
 
 const syncDateField = (): void => {
@@ -570,6 +779,7 @@ const importCircularLayout = (students: string[]): void => {
 
   state.currentLayout = 'circular';
   state.groups = convertStudentsToCircular(normalized);
+  state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
   state.rowGroups = makeEmptyRowGroups();
   state.arcGroups = makeEmptyArcGroups();
   state.currentArrangement = 0;
@@ -593,6 +803,7 @@ const importRowsLayout = (students: string[]): void => {
   state.currentLayout = 'rows';
   state.rowGroups = convertStudentsToRows(normalized);
   state.groups = makeEmptyCircularGroups();
+  state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
   state.arcGroups = makeEmptyArcGroups();
   state.currentArrangement = 0;
   setLayoutClass('rows');
@@ -643,6 +854,7 @@ const importArcLayout = (input: string): void => {
 
   state.currentLayout = 'arc';
   state.groups = makeEmptyCircularGroups();
+  state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
   state.rowGroups = makeEmptyRowGroups();
   state.arcGroups = makeEmptyArcGroups();
   placeCentered(state.arcGroups.rows[0], first);
@@ -699,13 +911,19 @@ const rotateLocationByWeek = (info: LocationInfo): LocationInfo => {
   return next;
 };
 
-const rotateSingleClassMode = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMode] => {
+const rotateSingleClassMode = (mode: ClassConfig[TimeMode], rotateDate: boolean): ClassConfig[TimeMode] => {
+  const nextLocationInfo = rotateDate
+    ? rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+    : sanitizeLocationInfo(mode.locationInfo);
+
   if (mode.layout === 'circular') {
+    const activeCount = getCircularGroupCountFromGroups(mode.groups || makeEmptyCircularGroups());
     return {
       ...mode,
       groups: rotateCircularLayoutForWeek(mode.groups || makeEmptyCircularGroups()),
+      groupOrder: rotateCircularGroupOrderForWeek(mode.groupOrder || [1, 2, 3, 4, 5, 6], activeCount),
       currentArrangement: (mode.currentArrangement + 1) % 200,
-      locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+      locationInfo: nextLocationInfo
     };
   }
 
@@ -713,16 +931,18 @@ const rotateSingleClassMode = (mode: ClassConfig[TimeMode]): ClassConfig[TimeMod
     return {
       ...mode,
       rowGroups: rotateRowsLayoutForWeek(mode.rowGroups || makeEmptyRowGroups()),
+      groupOrder: null,
       currentArrangement: (mode.currentArrangement + 1) % 200,
-      locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+      locationInfo: nextLocationInfo
     };
   }
 
   return {
     ...mode,
     arcGroups: rotateArcLayoutForWeek(mode.arcGroups || makeEmptyArcGroups()),
+    groupOrder: null,
     currentArrangement: (mode.currentArrangement + 1) % 200,
-    locationInfo: rotateLocationByWeek(sanitizeLocationInfo(mode.locationInfo))
+    locationInfo: nextLocationInfo
   };
 };
 
@@ -733,7 +953,9 @@ const generateSeating = (): void => {
   }
 
   if (state.currentLayout === 'circular') {
+    const activeCount = getCircularGroupCountFromGroups(state.groups);
     state.groups = rotateCircularLayoutForWeek(state.groups);
+    state.currentGroupOrder = rotateCircularGroupOrderForWeek(state.currentGroupOrder, activeCount);
   } else if (state.currentLayout === 'rows') {
     state.rowGroups = rotateRowsLayoutForWeek(state.rowGroups);
   } else {
@@ -741,17 +963,19 @@ const generateSeating = (): void => {
   }
 
   state.currentArrangement = (state.currentArrangement + 1) % 200;
-  setLocationInfo(rotateLocationByWeek(getLocationInfo()));
   refresh();
   saveCurrentClassMode();
 };
 
 const generateWeeklySeating = (): void => {
+  saveBatchUndoData(deepCopy(state.classData));
   Object.keys(state.classData).forEach((className) => {
     const current = state.classData[className];
     state.classData[className] = {
-      weekday: rotateSingleClassMode(current.weekday),
-      weekend: rotateSingleClassMode(current.weekend)
+      theme: current.theme,
+      previousWeek: snapshotFromConfig(current),
+      weekday: rotateSingleClassMode(current.weekday, true),
+      weekend: rotateSingleClassMode(current.weekend, true)
     };
   });
 
@@ -764,6 +988,115 @@ const generateWeeklySeating = (): void => {
   }
 
   alert('已生成新一周座位表，所有班级已完成轮转并保存。');
+};
+
+const undoWeeklySeating = (): void => {
+  const snapshot = loadBatchUndoData();
+  if (!snapshot) {
+    alert('当前没有可撤回的周轮转记录。');
+    return;
+  }
+
+  state.classData = sanitizeClassDataMap(snapshot);
+  clearBatchUndoData();
+  persist();
+  updateClassSelect();
+  renderClassOverview();
+
+  if (state.currentView === 'editor' && classSelect().value) {
+    loadClass();
+  }
+
+  alert('已撤回上次主页周轮转。');
+};
+
+const currentStudentList = (): string[] => {
+  if (state.currentLayout === 'circular') {
+    return collectStudentsFromCircular(state.groups);
+  }
+  if (state.currentLayout === 'rows') {
+    return collectStudentsFromRows(state.rowGroups);
+  }
+  return collectStudentsFromArc(state.arcGroups);
+};
+
+const sortStudentNames = (students: string[]): string[] =>
+  [...normalizeStudentList(students)].sort((left, right) =>
+    left.localeCompare(right, 'en', { sensitivity: 'base', numeric: true })
+  );
+
+const showPreviousWeekDialog = (): void => {
+  const className = classSelect().value.trim();
+  if (!className) {
+    alert('请先选择班级。');
+    return;
+  }
+
+  const previousWeek = state.classData[className]?.previousWeek;
+  if (!previousWeek) {
+    alert('这个班级还没有上一周记录。');
+    return;
+  }
+
+  const modeLabel = state.currentTimeMode === 'weekday' ? '周中' : '周末';
+  const previewContainer = byId<HTMLDivElement>('previousWeekPreview');
+  const summary = byId<HTMLParagraphElement>('previousWeekSummary');
+  previewContainer.className = `previous-week-preview ${previousWeek[state.currentTimeMode].layout === 'rows' ? 'three-rows-layout' : previousWeek[state.currentTimeMode].layout === 'arc' ? 'arc-layout' : 'classroom'}`;
+  summary.textContent = `${className} · ${modeLabel} · 预览上一周座位。恢复后会把当前版本保留为新的“上周”记录。`;
+  renderModePreview(previewContainer, previousWeek[state.currentTimeMode]);
+  showDialog('previousWeekDialog');
+};
+
+const hidePreviousWeekDialog = (): void => {
+  hideDialog('previousWeekDialog');
+};
+
+const restorePreviousWeek = (): void => {
+  const className = classSelect().value.trim();
+  if (!className) {
+    return;
+  }
+
+  const current = state.classData[className];
+  const previousWeek = current?.previousWeek;
+  if (!current || !previousWeek) {
+    alert('没有可恢复的上一周记录。');
+    return;
+  }
+
+  const currentSnapshot = snapshotFromConfig(current);
+  state.classData[className] = {
+    ...sanitizeClassSnapshot(previousWeek),
+    previousWeek: currentSnapshot
+  };
+  persist();
+  loadClass();
+  renderClassOverview();
+  hidePreviousWeekDialog();
+  alert('已恢复为上周版本。');
+};
+
+const showRosterDialog = (): void => {
+  const className = classSelect().value.trim();
+  if (!className) {
+    alert('请先选择班级。');
+    return;
+  }
+
+  const students = sortStudentNames(currentStudentList());
+  const summary = byId<HTMLParagraphElement>('rosterSummary');
+  const rosterList = byId<HTMLDivElement>('rosterList');
+  const modeLabel = state.currentTimeMode === 'weekday' ? '周中' : '周末';
+
+  summary.textContent = `${className} · ${modeLabel} · 当前总人数 ${students.length} 人`;
+  rosterList.innerHTML = students.length
+    ? students.map((student, index) => `<div class="roster-item"><span>${index + 1}.</span><strong>${escapeHtml(student)}</strong></div>`).join('')
+    : '<div class="muted">当前没有学生名单。</div>';
+  showDialog('rosterDialog');
+};
+
+const hideRosterDialog = (): void => {
+  hideDialog('rosterDialog');
 };
 
 const toggleEditMode = (): void => {
@@ -797,15 +1130,18 @@ const toggleLayout = (): void => {
 
   if (nextLayout === 'circular') {
     state.groups = convertStudentsToCircular(currentStudents);
+    state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
     state.rowGroups = makeEmptyRowGroups();
     state.arcGroups = makeEmptyArcGroups();
   } else if (nextLayout === 'rows') {
     state.rowGroups = convertStudentsToRows(currentStudents);
     state.groups = makeEmptyCircularGroups();
+    state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
     state.arcGroups = makeEmptyArcGroups();
   } else {
     state.arcGroups = convertStudentsToArc(currentStudents);
     state.groups = makeEmptyCircularGroups();
+    state.currentGroupOrder = [1, 2, 3, 4, 5, 6];
     state.rowGroups = makeEmptyRowGroups();
   }
 
@@ -1242,6 +1578,7 @@ const draftToModeData = (draft: OCRDraftView): ClassConfig[TimeMode] => {
     return {
       layout: 'circular',
       groups,
+      groupOrder: [1, 2, 3, 4, 5, 6],
       rowGroups: null,
       arcGroups: null,
       currentArrangement: 0,
@@ -1264,6 +1601,7 @@ const draftToModeData = (draft: OCRDraftView): ClassConfig[TimeMode] => {
     return {
       layout: 'rows',
       groups: null,
+      groupOrder: null,
       rowGroups: {
         rows: [
           { left: slotGroups[0], right: slotGroups[1] },
@@ -1281,6 +1619,7 @@ const draftToModeData = (draft: OCRDraftView): ClassConfig[TimeMode] => {
   return {
     layout: 'arc',
     groups: null,
+    groupOrder: null,
     rowGroups: null,
     arcGroups: { rows: [rows[0], rows[1]] },
     currentArrangement: 0,
@@ -1322,44 +1661,217 @@ const confirmImageImport = (): void => {
   alert(`已导入 ${ocrDrafts.length} 条图片识别结果。`);
 };
 
-const showManualTuneDialog = (): void => {
-  const currentCount =
-    state.currentLayout === 'circular'
-      ? getCircularGroupCountFromGroups(state.groups)
-      : state.currentLayout === 'rows'
-        ? getRowsGroupCountFromGroups(state.rowGroups)
-        : 4;
+const currentGroupCountForLayout = (): number =>
+  state.currentLayout === 'circular'
+    ? Math.max(1, getCircularGroupCountFromGroups(state.groups))
+    : state.currentLayout === 'rows'
+      ? Math.max(1, getRowsGroupCountFromGroups(state.rowGroups))
+      : 4;
 
-  byId<HTMLInputElement>('manualGroupCount').value = String(Math.max(1, currentCount));
+const collectManualDraftStudents = (draft: ManualTuneDraft): string[] =>
+  draft.layout === 'circular'
+    ? collectStudentsFromCircular(draft.groups)
+    : draft.layout === 'rows'
+      ? collectStudentsFromRows(draft.rowGroups)
+      : collectStudentsFromArc(draft.arcGroups);
+
+const buildManualSeatSections = (draft: ManualTuneDraft): Array<{ title: string; seats: ManualSeatRef[] }> => {
+  if (draft.layout === 'circular') {
+    return draft.groups.map((group, groupIndex) => ({
+      title: `第${groupIndex + 1}组`,
+      seats: group.map((_, seatIndex) => ({
+        key: `c-${groupIndex}-${seatIndex}`,
+        label: `座位 ${seatIndex + 1}`,
+        kind: 'circular',
+        groupIndex,
+        seatIndex
+      }))
+    }));
+  }
+
+  if (draft.layout === 'rows') {
+    const labels = [
+      ['第一排左', '第一排右'],
+      ['第二排左', '第二排右'],
+      ['第三排左', '第三排右']
+    ] as const;
+
+    return draft.rowGroups.rows.flatMap((row, rowIndex) => ([
+      {
+        title: labels[rowIndex][0],
+        seats: row.left.map((_, seatIndex) => ({
+          key: `r-${rowIndex}-left-${seatIndex}`,
+          label: `位置 ${seatIndex + 1}`,
+          kind: 'rows' as const,
+          rowIndex,
+          side: 'left' as const,
+          seatIndex
+        }))
+      },
+      {
+        title: labels[rowIndex][1],
+        seats: row.right.map((_, seatIndex) => ({
+          key: `r-${rowIndex}-right-${seatIndex}`,
+          label: `位置 ${seatIndex + 1}`,
+          kind: 'rows' as const,
+          rowIndex,
+          side: 'right' as const,
+          seatIndex
+        }))
+      }
+    ]));
+  }
+
+  return draft.arcGroups.rows.map((row, rowIndex) => ({
+    title: rowIndex === 0 ? '第一排' : '第二排',
+    seats: row.map((_, seatIndex) => ({
+      key: `a-${rowIndex}-${seatIndex}`,
+      label: `位置 ${seatIndex + 1}`,
+      kind: 'arc',
+      rowIndex,
+      seatIndex
+    }))
+  }));
+};
+
+const getManualSeatValue = (draft: ManualTuneDraft, seat: ManualSeatRef): string => {
+  if (seat.kind === 'circular') {
+    return draft.groups[seat.groupIndex]?.[seat.seatIndex] || '';
+  }
+  if (seat.kind === 'rows') {
+    return draft.rowGroups.rows[seat.rowIndex]?.[seat.side]?.[seat.seatIndex] || '';
+  }
+  return draft.arcGroups.rows[seat.rowIndex]?.[seat.seatIndex] || '';
+};
+
+const setManualSeatValue = (draft: ManualTuneDraft, seat: ManualSeatRef, value: string): void => {
+  if (seat.kind === 'circular') {
+    draft.groups[seat.groupIndex][seat.seatIndex] = value;
+    return;
+  }
+  if (seat.kind === 'rows') {
+    draft.rowGroups.rows[seat.rowIndex][seat.side][seat.seatIndex] = value;
+    return;
+  }
+  draft.arcGroups.rows[seat.rowIndex][seat.seatIndex] = value;
+};
+
+const findManualSeat = (draft: ManualTuneDraft, key: string): ManualSeatRef | null => {
+  for (const section of buildManualSeatSections(draft)) {
+    const hit = section.seats.find((seat) => seat.key === key);
+    if (hit) {
+      return hit;
+    }
+  }
+  return null;
+};
+
+const renderManualTuneEditor = (): void => {
+  const container = byId<HTMLDivElement>('manualSeatEditor');
+  if (!manualTuneDraft) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const sections = buildManualSeatSections(manualTuneDraft);
+  container.innerHTML = sections
+    .map((section) => `
+      <section class="manual-seat-group">
+        <h3>${escapeHtml(section.title)}</h3>
+        ${section.seats.map((seat) => `
+          <div class="manual-seat-row${manualTuneDraft?.selectedSeatKey === seat.key ? ' selected' : ''}" data-seat-key="${seat.key}">
+            <span class="manual-seat-label">${escapeHtml(seat.label)}</span>
+            <input data-seat-input="${seat.key}" value="${escapeHtml(getManualSeatValue(manualTuneDraft!, seat))}" />
+          </div>
+        `).join('')}
+      </section>
+    `)
+    .join('');
+};
+
+const showManualTuneDialog = (): void => {
+  manualTuneDraft = {
+    layout: state.currentLayout,
+    groups: deepCopy(state.groups),
+    rowGroups: deepCopy(state.rowGroups),
+    arcGroups: deepCopy(state.arcGroups),
+    groupCount: currentGroupCountForLayout(),
+    selectedSeatKey: null
+  };
+
+  byId<HTMLInputElement>('manualGroupCount').value = String(manualTuneDraft.groupCount);
+  byId<HTMLInputElement>('manualNewStudent').value = '';
   byId<HTMLDivElement>('manualTuneError').textContent = '';
+  renderManualTuneEditor();
   showDialog('manualTuneDialog');
 };
 
 const hideManualTuneDialog = (): void => {
+  manualTuneDraft = null;
   hideDialog('manualTuneDialog');
 };
 
-const applyManualTune = (): void => {
+const applyManualGroupCount = (): void => {
+  if (!manualTuneDraft) {
+    return;
+  }
+
   const groupCount = Number.parseInt(byId<HTMLInputElement>('manualGroupCount').value, 10);
-  const students =
-    state.currentLayout === 'circular'
-      ? collectStudentsFromCircular(state.groups)
-      : state.currentLayout === 'rows'
-        ? collectStudentsFromRows(state.rowGroups)
-        : collectStudentsFromArc(state.arcGroups);
+  const students = collectManualDraftStudents(manualTuneDraft);
 
   try {
-    const result = applyManualGrouping(state.currentLayout, groupCount, students);
-    state.groups = result.groups;
-    state.rowGroups = result.rowGroups;
-    state.arcGroups = result.arcGroups;
-    state.currentArrangement = 0;
-    refresh();
-    saveCurrentClassMode();
-    hideManualTuneDialog();
+    const result = applyManualGrouping(manualTuneDraft.layout, groupCount, students);
+    manualTuneDraft.groups = result.groups;
+    manualTuneDraft.rowGroups = result.rowGroups;
+    manualTuneDraft.arcGroups = result.arcGroups;
+    manualTuneDraft.groupCount = groupCount;
+    manualTuneDraft.selectedSeatKey = null;
+    byId<HTMLDivElement>('manualTuneError').textContent = '';
+    renderManualTuneEditor();
   } catch (error) {
-    byId<HTMLDivElement>('manualTuneError').textContent = error instanceof Error ? error.message : '微调失败';
+    byId<HTMLDivElement>('manualTuneError').textContent = error instanceof Error ? error.message : '重排失败';
   }
+};
+
+const addManualTuneStudent = (): void => {
+  if (!manualTuneDraft) {
+    return;
+  }
+
+  const input = byId<HTMLInputElement>('manualNewStudent');
+  const name = input.value.trim();
+  if (!name) {
+    byId<HTMLDivElement>('manualTuneError').textContent = '请先输入新学生名字。';
+    return;
+  }
+
+  const target = buildManualSeatSections(manualTuneDraft)
+    .flatMap((section) => section.seats)
+    .find((seat) => !getManualSeatValue(manualTuneDraft!, seat).trim());
+
+  if (!target) {
+    byId<HTMLDivElement>('manualTuneError').textContent = '当前没有空位，请先调组数或清空一个座位。';
+    return;
+  }
+
+  setManualSeatValue(manualTuneDraft, target, name);
+  input.value = '';
+  byId<HTMLDivElement>('manualTuneError').textContent = '';
+  renderManualTuneEditor();
+};
+
+const applyManualTune = (): void => {
+  if (!manualTuneDraft) {
+    return;
+  }
+
+  state.groups = deepCopy(manualTuneDraft.groups);
+  state.rowGroups = deepCopy(manualTuneDraft.rowGroups);
+  state.arcGroups = deepCopy(manualTuneDraft.arcGroups);
+  state.currentArrangement = 0;
+  refresh();
+  saveCurrentClassMode();
+  hideManualTuneDialog();
 };
 
 const showBatchImportDialog = (): void => {
@@ -1577,6 +2089,100 @@ const updateTime = (): void => {
 };
 
 const bindNotes = (): void => {
+  const panel = byId<HTMLDivElement>('editorView').querySelector<HTMLElement>('.right-section');
+  const notesSection = byId<HTMLDivElement>('editorView').querySelector<HTMLElement>('.notes-section');
+  const widthHandle = byId<HTMLDivElement>('notesWidthHandle');
+  const heightHandle = byId<HTMLDivElement>('notesHeightHandle');
+  const toolbarToggle = byId<HTMLButtonElement>('notesToolbarToggle');
+  const widthKey = 'classSeatingNotesPanelWidth';
+  const heightKey = 'classSeatingNotesSectionHeight';
+  const collapsedKey = 'classSeatingNotesToolbarCollapsed';
+
+  if (panel && notesSection) {
+    const savedWidth = window.localStorage.getItem(widthKey);
+    if (savedWidth) {
+      panel.style.width = `${Math.max(280, Math.min(520, Number(savedWidth) || 360))}px`;
+    }
+    const savedHeight = window.localStorage.getItem(heightKey);
+    if (savedHeight) {
+      notesSection.style.height = `${Math.max(520, Number(savedHeight) || 520)}px`;
+    }
+
+    const applyToolbarState = (collapsed: boolean): void => {
+      notesSection.classList.toggle('toolbar-collapsed', collapsed);
+      toolbarToggle.textContent = collapsed ? '显示设置' : '隐藏设置';
+      window.localStorage.setItem(collapsedKey, collapsed ? '1' : '0');
+    };
+
+    applyToolbarState(window.localStorage.getItem(collapsedKey) !== '0');
+    toolbarToggle.addEventListener('click', () => {
+      applyToolbarState(!notesSection.classList.contains('toolbar-collapsed'));
+    });
+
+    const persistWidth = (): void => {
+      window.localStorage.setItem(widthKey, String(panel.getBoundingClientRect().width));
+    };
+    const persistHeight = (): void => {
+      window.localStorage.setItem(heightKey, String(notesSection.getBoundingClientRect().height));
+    };
+
+    panel.addEventListener('mouseup', persistWidth);
+    panel.addEventListener('touchend', persistWidth);
+    notesSection.addEventListener('mouseup', persistHeight);
+    notesSection.addEventListener('touchend', persistHeight);
+
+    widthHandle.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = panel.getBoundingClientRect().width;
+
+      const onMove = (moveEvent: PointerEvent): void => {
+        const nextWidth = Math.max(280, Math.min(560, startWidth + (moveEvent.clientX - startX)));
+        panel.style.width = `${nextWidth}px`;
+        persistWidth();
+      };
+
+      const onUp = (): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        persistWidth();
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp, { once: true });
+    });
+
+    heightHandle.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      const startY = event.clientY;
+      const startHeight = notesSection.getBoundingClientRect().height;
+
+      const onMove = (moveEvent: PointerEvent): void => {
+        const nextHeight = Math.max(440, Math.min(window.innerHeight - 80, startHeight + (moveEvent.clientY - startY)));
+        notesSection.style.height = `${nextHeight}px`;
+        persistHeight();
+      };
+
+      const onUp = (): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        persistHeight();
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp, { once: true });
+    });
+
+    if ('ResizeObserver' in window) {
+      const observer = new ResizeObserver(() => {
+        persistWidth();
+        persistHeight();
+      });
+      observer.observe(panel);
+      observer.observe(notesSection);
+    }
+  }
+
   byId<HTMLSelectElement>('noteFontSize').addEventListener('change', (event) => {
     document.execCommand('fontSize', false, '7');
     const fonts = document.getElementsByTagName('font');
@@ -1699,33 +2305,40 @@ const bindOcrReviewEvents = (): void => {
 };
 
 const bindHomeEvents = (): void => {
-  byId<HTMLDivElement>('welcomeBox').addEventListener('contextmenu', (event) => {
-    event.preventDefault();
-    const input = window.prompt('修改用户名', state.userProfile.username);
-    const username = input?.trim();
+  const saveUsername = (): void => {
+    const username = byId<HTMLInputElement>('usernameInput').value.trim();
     if (!username) {
       return;
     }
     state.userProfile.username = username;
     saveProfile();
     updateWelcome();
+  };
+
+  byId<HTMLButtonElement>('saveUsernameBtn').addEventListener('click', saveUsername);
+  byId<HTMLInputElement>('usernameInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      saveUsername();
+    }
   });
 
   byId<HTMLSelectElement>('themeSelect').addEventListener('change', (event) => {
     const value = (event.target as HTMLSelectElement).value as ThemeName;
     state.userProfile.theme = value;
     saveProfile();
-    applyTheme(value);
+    if (state.currentView === 'home') {
+      applyTheme(value);
+    }
   });
 
   byId<HTMLDivElement>('homeClassList').addEventListener('click', (event) => {
     const target = event.target as HTMLElement;
-    const button = target.closest<HTMLButtonElement>('[data-open-class]');
-    if (!button) {
+    const card = target.closest<HTMLElement>('[data-open-class]');
+    if (!card) {
       return;
     }
 
-    const className = button.dataset.openClass;
+    const className = card.dataset.openClass;
     if (!className) {
       return;
     }
@@ -1735,8 +2348,91 @@ const bindHomeEvents = (): void => {
 };
 
 const bindCoreEvents = (): void => {
+  const editorView = byId<HTMLDivElement>('editorView');
+  const editorToolsToggle = byId<HTMLButtonElement>('editorToolsToggle');
+  const editorToolsKey = 'classSeatingEditorToolsCollapsed';
+  const applyEditorToolsState = (collapsed: boolean): void => {
+    editorView.classList.toggle('editor-tools-collapsed', collapsed);
+    editorToolsToggle.textContent = collapsed ? '显示工具' : '隐藏工具';
+    window.localStorage.setItem(editorToolsKey, collapsed ? '1' : '0');
+  };
+
+  applyEditorToolsState(window.localStorage.getItem(editorToolsKey) === '1');
+  editorToolsToggle.addEventListener('click', () => {
+    applyEditorToolsState(!editorView.classList.contains('editor-tools-collapsed'));
+  });
+
   byId<HTMLInputElement>('date').addEventListener('change', syncDateField);
   byId<HTMLInputElement>('day').addEventListener('change', syncDateField);
+  byId<HTMLDivElement>('manualSeatEditor').addEventListener('click', (event) => {
+    if (!manualTuneDraft) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    if (target.closest('input')) {
+      return;
+    }
+
+    const row = target.closest<HTMLElement>('[data-seat-key]');
+    const key = row?.dataset.seatKey;
+    if (!key) {
+      return;
+    }
+
+    if (!manualTuneDraft.selectedSeatKey || manualTuneDraft.selectedSeatKey === key) {
+      manualTuneDraft.selectedSeatKey = manualTuneDraft.selectedSeatKey === key ? null : key;
+      renderManualTuneEditor();
+      return;
+    }
+
+    const firstSeat = findManualSeat(manualTuneDraft, manualTuneDraft.selectedSeatKey);
+    const secondSeat = findManualSeat(manualTuneDraft, key);
+    if (!firstSeat || !secondSeat) {
+      manualTuneDraft.selectedSeatKey = null;
+      renderManualTuneEditor();
+      return;
+    }
+
+    const firstValue = getManualSeatValue(manualTuneDraft, firstSeat);
+    const secondValue = getManualSeatValue(manualTuneDraft, secondSeat);
+    setManualSeatValue(manualTuneDraft, firstSeat, secondValue);
+    setManualSeatValue(manualTuneDraft, secondSeat, firstValue);
+    manualTuneDraft.selectedSeatKey = null;
+    byId<HTMLDivElement>('manualTuneError').textContent = '';
+    renderManualTuneEditor();
+  });
+  byId<HTMLDivElement>('manualSeatEditor').addEventListener('input', (event) => {
+    if (!manualTuneDraft) {
+      return;
+    }
+
+    const target = event.target as HTMLInputElement;
+    const key = target.dataset.seatInput;
+    if (!key) {
+      return;
+    }
+
+    const seat = findManualSeat(manualTuneDraft, key);
+    if (!seat) {
+      return;
+    }
+
+    setManualSeatValue(manualTuneDraft, seat, target.value);
+  });
+  byId<HTMLSelectElement>('editorThemeSelect').addEventListener('change', (event) => {
+    const className = classSelect().value.trim();
+    if (!className) {
+      return;
+    }
+
+    ensureClassShell(className);
+    const value = (event.target as HTMLSelectElement).value as ThemeName;
+    state.classData[className].theme = value;
+    applyTheme(value);
+    persist();
+    renderClassOverview();
+  });
 
   byId<HTMLInputElement>('circularLayout').addEventListener('change', updateLayoutDescription);
   byId<HTMLInputElement>('rowsLayout').addEventListener('change', updateLayoutDescription);
@@ -1765,6 +2461,7 @@ interface AppWindow extends Window {
   showSaveDialog: () => void;
   hideSaveDialog: () => void;
   saveClass: () => void;
+  renameCurrentClass: () => void;
   deleteCurrentClass: () => void;
   showImportDialog: () => void;
   hideImportDialog: () => void;
@@ -1779,6 +2476,7 @@ interface AppWindow extends Window {
   toggleLayout: () => void;
   goHome: () => void;
   generateWeeklySeating: () => void;
+  undoWeeklySeating: () => void;
   showCreateClassDialog: () => void;
   hideCreateClassDialog: () => void;
   showImageImportDialog: () => void;
@@ -1788,7 +2486,15 @@ interface AppWindow extends Window {
   confirmImageImport: () => void;
   showManualTuneDialog: () => void;
   hideManualTuneDialog: () => void;
+  applyManualGroupCount: () => void;
+  addManualTuneStudent: () => void;
   applyManualTune: () => void;
+  copyCurrentToOtherMode: () => void;
+  showPreviousWeekDialog: () => void;
+  hidePreviousWeekDialog: () => void;
+  restorePreviousWeek: () => void;
+  showRosterDialog: () => void;
+  hideRosterDialog: () => void;
 }
 
 const exposeToWindow = (): void => {
@@ -1798,6 +2504,7 @@ const exposeToWindow = (): void => {
   w.showSaveDialog = showSaveDialog;
   w.hideSaveDialog = hideSaveDialog;
   w.saveClass = saveClass;
+  w.renameCurrentClass = renameCurrentClass;
   w.deleteCurrentClass = deleteCurrentClass;
   w.showImportDialog = showImportDialog;
   w.hideImportDialog = hideImportDialog;
@@ -1812,6 +2519,7 @@ const exposeToWindow = (): void => {
   w.toggleLayout = toggleLayout;
   w.goHome = goHome;
   w.generateWeeklySeating = generateWeeklySeating;
+  w.undoWeeklySeating = undoWeeklySeating;
   w.showCreateClassDialog = showCreateClassDialog;
   w.hideCreateClassDialog = hideCreateClassDialog;
   w.showImageImportDialog = showImageImportDialog;
@@ -1821,7 +2529,15 @@ const exposeToWindow = (): void => {
   w.confirmImageImport = confirmImageImport;
   w.showManualTuneDialog = showManualTuneDialog;
   w.hideManualTuneDialog = hideManualTuneDialog;
+  w.applyManualGroupCount = applyManualGroupCount;
+  w.addManualTuneStudent = addManualTuneStudent;
   w.applyManualTune = applyManualTune;
+  w.copyCurrentToOtherMode = copyCurrentToOtherMode;
+  w.showPreviousWeekDialog = showPreviousWeekDialog;
+  w.hidePreviousWeekDialog = hidePreviousWeekDialog;
+  w.restorePreviousWeek = restorePreviousWeek;
+  w.showRosterDialog = showRosterDialog;
+  w.hideRosterDialog = hideRosterDialog;
 };
 
 const loadProfile = (): void => {

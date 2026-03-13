@@ -1,6 +1,6 @@
 export type TimeMode = 'weekday' | 'weekend';
 export type LayoutType = 'circular' | 'rows' | 'arc';
-export type ThemeName = 'classic' | 'sky' | 'sunny';
+export type ThemeName = 'paper' | 'classic' | 'mint' | 'rose' | 'apricot' | 'golden' | 'plum';
 export type OcrEngineMode = 'hybrid' | 'tencent' | 'local';
 export type TencentOcrAction = 'Auto' | 'ExtractDocMulti' | 'GeneralAccurateOCR' | 'GeneralBasicOCR';
 
@@ -32,15 +32,21 @@ export interface ArcGroups {
 export interface TimeModeData {
   layout: LayoutType;
   groups: string[][] | null;
+  groupOrder: number[] | null;
   rowGroups: RowGroups | null;
   arcGroups: ArcGroups | null;
   currentArrangement: number;
   locationInfo: LocationInfo;
 }
 
-export interface ClassConfig {
+export interface ClassSnapshot {
+  theme: ThemeName;
   weekday: TimeModeData;
   weekend: TimeModeData;
+}
+
+export interface ClassConfig extends ClassSnapshot {
+  previousWeek: ClassSnapshot | null;
 }
 
 export type ClassData = Record<string, ClassConfig>;
@@ -65,6 +71,7 @@ export interface AppState {
   currentLayout: LayoutType;
   currentView: 'home' | 'editor';
   groups: string[][];
+  currentGroupOrder: number[];
   rowGroups: RowGroups;
   arcGroups: ArcGroups;
   classData: ClassData;

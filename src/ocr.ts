@@ -195,7 +195,7 @@ const sanitizeStudentNames = (values: Array<string | null | undefined>): string[
     values
       .map((value) => normalizeName(value || ''))
       .filter(Boolean)
-      .filter((name) => (isLikelyEnglishName(name) || isLikelyChineseName(name)) && !isNoiseName(name))
+      .filter((name) => (isLikelyEnglishName(name) || isLikelyChineseName(name) || isLikelyMixedName(name)) && !isNoiseName(name))
   );
 
 const prioritizeEnglishNames = (values: Array<string | null | undefined>): string[] => {
@@ -213,7 +213,7 @@ const sanitizeSeatGroups = (groups: string[][]): string[][] =>
       const normalized = normalizeName(name || '');
       if (!normalized) return '';
       if (isNoiseName(normalized)) return '';
-      if (!isLikelyEnglishName(normalized) && !isLikelyChineseName(normalized)) return '';
+      if (!isLikelyEnglishName(normalized) && !isLikelyChineseName(normalized) && !isLikelyMixedName(normalized)) return '';
       return normalized;
     })
   );
@@ -249,6 +249,14 @@ const normalizeName = (raw: string): string => {
   if (!cleaned) return '';
 
   if (/^[A-Za-z][A-Za-z'-.]*$/.test(cleaned)) {
+    const suffixMatch = cleaned.match(/^([A-Za-z]{3,})([A-Z])$/);
+    if (suffixMatch) {
+      const baseNorm = suffixMatch[1].charAt(0).toUpperCase() + suffixMatch[1].slice(1).toLowerCase();
+      if (COMMON_ENGLISH_NAMES.has(baseNorm.toLowerCase())) {
+        return `${baseNorm}${suffixMatch[2]}`;
+      }
+    }
+
     const normalized = cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
     const lowered = normalized.toLowerCase();
     if (COMMON_ENGLISH_NAMES.has(lowered)) return normalized;
@@ -261,7 +269,13 @@ const normalizeName = (raw: string): string => {
     return normalized;
   }
 
-  const englishPart = cleaned.match(/[A-Za-z][A-Za-z'-.]*/)?.[0];
+  const chineseTrail = cleaned.match(/[\u4e00-\u9fff]{1,2}$/);
+  const englishPart = cleaned.match(/^[A-Za-z][A-Za-z'-.]*/)?.[0];
+  if (chineseTrail && englishPart) {
+    const baseNorm = englishPart.charAt(0).toUpperCase() + englishPart.slice(1).toLowerCase();
+    return `${baseNorm}${chineseTrail[0]}`;
+  }
+
   if (englishPart && /^[A-Za-z][A-Za-z'-.]*$/.test(englishPart)) {
     const normalized = englishPart.charAt(0).toUpperCase() + englishPart.slice(1).toLowerCase();
     const lowered = normalized.toLowerCase();
@@ -295,8 +309,17 @@ const isLikelyEnglishName = (name: string): boolean => {
   const lettersOnly = lower.replace(/[^a-z]/g, '');
   if (lettersOnly.length < 3) return false;
   if (COMMON_ENGLISH_NAMES.has(lettersOnly)) return true;
+
+  const suffixMatch = name.match(/^([A-Z][a-z]{2,})([A-Z])$/);
+  if (suffixMatch && COMMON_ENGLISH_NAMES.has(suffixMatch[1].toLowerCase())) return true;
+
+  if (/^l[a-z]{2,}$/.test(lettersOnly)) {
+    const maybeI = `i${lettersOnly.slice(1)}`;
+    if (COMMON_ENGLISH_NAMES.has(maybeI)) return true;
+  }
+
   if (!hasEnglishVowel(lettersOnly)) return false;
-  if (lettersOnly.length <= 4) return false;
+  if (lettersOnly.length <= 2) return false;
 
   return true;
 };
@@ -306,6 +329,9 @@ const isLikelyChineseName = (name: string): boolean => {
   if (CN_NAME_NOISE_PATTERN.test(name)) return false;
   return !CN_STOP_FRAGMENTS.some((fragment) => name.includes(fragment));
 };
+
+const isLikelyMixedName = (name: string): boolean =>
+  /^[A-Za-z][A-Za-z'-.]{1,19}[\u4e00-\u9fff]{1,2}$/.test(name);
 
 const uniqueStrings = (values: Array<string | null | undefined>): string[] => {
   const seen = new Set<string>();
@@ -594,7 +620,7 @@ const extractPositionedNames = (words: OCRWordBox[]): PositionedName[] => {
     const y = (word.y0 + word.y1) / 2;
     const token = { name: normalized, x, y, confidence };
 
-    if (isLikelyEnglishName(normalized)) {
+    if (isLikelyEnglishName(normalized) || isLikelyMixedName(normalized)) {
       english.push(token);
     } else if (isLikelyChineseName(normalized) && confidence >= 70) {
       chinese.push(token);
@@ -774,7 +800,7 @@ const extractLikelyNamesFromWords = (words: OCRWordBox[], minConfidence: number)
     const normalized = normalizeName(word.text);
     if (!normalized) continue;
 
-    if (isLikelyEnglishName(normalized)) {
+    if (isLikelyEnglishName(normalized) || isLikelyMixedName(normalized)) {
       names.push(normalized);
     } else if (isLikelyChineseName(normalized) && confidence >= Math.max(70, minConfidence)) {
       names.push(normalized);
@@ -789,7 +815,7 @@ const estimateImageStudentCount = (rawText: string, words: OCRWordBox[]): number
   const fromWordsLoose = extractLikelyNamesFromWords(words, 35).length;
   const fromText = parseStudentNames(rawText)
     .map((name) => normalizeName(name))
-    .filter((name) => isLikelyEnglishName(name) || isLikelyChineseName(name)).length;
+    .filter((name) => isLikelyEnglishName(name) || isLikelyChineseName(name) || isLikelyMixedName(name)).length;
 
   return Math.max(fromWordsStrict, fromWordsLoose, Math.min(36, fromText));
 };

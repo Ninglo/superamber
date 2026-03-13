@@ -43,12 +43,19 @@ export const loadOCRSettings = (): OCRSettings => {
 };
 
 export const saveOCRSettings = (settings: OCRSettings): void => {
+  const normalizedEndpoint = normalizeEndpoint(settings.tencentEndpoint);
+
   localStorage.setItem(
     OCR_SETTINGS_STORAGE_KEY,
     JSON.stringify({
       ...settings,
-      tencentEndpoint: normalizeEndpoint(settings.tencentEndpoint),
+      tencentEndpoint: normalizedEndpoint,
       tencentRegion: settings.tencentRegion.trim() || 'ap-guangzhou'
     })
   );
 };
+
+const activeSettings = loadOCRSettings();
+if (activeSettings.tencentEndpoint !== normalizeEndpoint(activeSettings.tencentEndpoint)) {
+  saveOCRSettings(activeSettings);
+}

@@ -43,20 +43,23 @@ export const makeEmptyLocationInfo = (): LocationInfo => ({
 export const makeModeData = (layout: LayoutType = 'circular'): TimeModeData => ({
   layout,
   groups: null,
+  groupOrder: null,
   rowGroups: null,
   arcGroups: null,
   currentArrangement: 0,
   locationInfo: makeEmptyLocationInfo()
 });
 
-export const makeClassShell = (layout: LayoutType = 'circular') => ({
+export const makeClassShell = (layout: LayoutType = 'circular', theme: ThemeName = 'paper') => ({
+  theme,
   weekday: makeModeData(layout),
-  weekend: makeModeData(layout)
+  weekend: makeModeData(layout),
+  previousWeek: null
 });
 
 export const makeDefaultProfile = (): UserProfile => ({
   username: '',
-  theme: 'classic' as ThemeName
+  theme: 'paper' as ThemeName
 });
 
 export const createInitialState = (): AppState => ({
@@ -66,6 +69,7 @@ export const createInitialState = (): AppState => ({
   currentLayout: 'circular',
   currentView: 'home',
   groups: makeEmptyCircularGroups(),
+  currentGroupOrder: [1, 2, 3, 4, 5, 6],
   rowGroups: makeEmptyRowGroups(),
   arcGroups: makeEmptyArcGroups(),
   classData: {} as ClassData,
