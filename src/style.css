@@ -442,6 +442,82 @@ textarea {
   z-index: 1;
 }
 
+.usage-guide {
+  margin-top: 22px;
+  position: relative;
+  z-index: 1;
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+
+.usage-guide-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.usage-guide-eyebrow {
+  margin: 0 0 6px;
+  color: var(--primary);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.usage-guide h2 {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 32px);
+  color: var(--primary-strong);
+}
+
+.usage-guide-note {
+  margin: 0;
+  max-width: 420px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: right;
+}
+
+.usage-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.usage-card {
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, white 20%);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.usage-card h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  color: var(--primary-strong);
+}
+
+.usage-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  display: grid;
+  gap: 8px;
+}
+
+.usage-card li {
+  line-height: 1.6;
+}
+
+.usage-card-emphasis {
+  background: linear-gradient(140deg, var(--panel) 0%, var(--surface-soft) 100%);
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--border) 72%);
+}
+
 button {
   border: none;
   border-radius: 10px;
@@ -1548,6 +1624,15 @@ button:disabled {
 
   .home-header {
     flex-direction: column;
+  }
+
+  .usage-guide-header {
+    flex-direction: column;
+  }
+
+  .usage-guide-note {
+    max-width: none;
+    text-align: left;
   }
 
   .theme-switch {

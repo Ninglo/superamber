@@ -32,6 +32,50 @@ export const appTemplate = `
       <button id="newClassBtn" onclick="showCreateClassDialog()">新建班级座位表</button>
     </section>
 
+    <section class="usage-guide" aria-labelledby="usageGuideTitle">
+      <div class="usage-guide-header">
+        <div>
+          <p class="usage-guide-eyebrow">使用说明</p>
+          <h2 id="usageGuideTitle">第一次打开先看这里</h2>
+        </div>
+        <p class="usage-guide-note">这是一套静态网页工具，上传到公司网站后即可直接访问。</p>
+      </div>
+      <div class="usage-guide-grid">
+        <article class="usage-card">
+          <h3>1. 建班与导入</h3>
+          <ul>
+            <li>点击“新建班级座位表”开始建班。</li>
+            <li>支持文字导入、图片 OCR 导入，也可以后续手动补名字。</li>
+            <li>只导入了周中或周末其中一边时，可在班内把已有座位同步到另一时段。</li>
+          </ul>
+        </article>
+        <article class="usage-card">
+          <h3>2. 班内编辑</h3>
+          <ul>
+            <li>进入班级后可修改班号、主题、日期、校区、教室和备注。</li>
+            <li>“手动微调”里可以改组数、改学生名字、交换座位、补录新学生。</li>
+            <li>“完整名单”可核对人数，并按字母顺序查看当前名单。</li>
+          </ul>
+        </article>
+        <article class="usage-card">
+          <h3>3. 轮转与回退</h3>
+          <ul>
+            <li>主页“生成第X周座位表”会批量推进所有班到下一周。</li>
+            <li>主页“撤回上次周轮转”可恢复整批误触。</li>
+            <li>每个班内都可“看看上周座位”，预览后再决定是否恢复。</li>
+          </ul>
+        </article>
+        <article class="usage-card usage-card-emphasis">
+          <h3>4. 部署与数据说明</h3>
+          <ul>
+            <li>给公司部署时，上传打包后的 dist 全部文件即可。</li>
+            <li>当前版本数据默认保存在浏览器本地，同一浏览器会记住，上线后不会自动跨设备同步。</li>
+            <li>如需所有设备共用同一份实时数据，后续需要再接后端存储。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
     <section class="class-overview">
       <h2>班级总览</h2>
       <div id="homeClassList" class="home-class-list"></div>
