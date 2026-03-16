@@ -7,10 +7,12 @@ const normalizeEndpoint = (value: string): string => {
   return trimmed || 'http://127.0.0.1:8787';
 };
 
+export const getDefaultOCREndpoint = (): string => 'http://127.0.0.1:8787';
+
 export const makeDefaultOCRSettings = (): OCRSettings => ({
   engine: 'hybrid',
   allowLocalFallback: false,
-  tencentEndpoint: 'http://127.0.0.1:8787',
+  tencentEndpoint: getDefaultOCREndpoint(),
   tencentRegion: 'ap-guangzhou',
   tencentAction: 'Auto'
 });
