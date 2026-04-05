@@ -2,15 +2,16 @@ import type { OCRSettings } from './types';
 
 const OCR_SETTINGS_STORAGE_KEY = 'classSeatingOCRSettings';
 
+const isLocalDev = (): boolean =>
+  location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+
 const normalizeEndpoint = (value: string): string => {
   const trimmed = value.trim().replace(/\/$/, '');
-  return trimmed || 'http://127.0.0.1:8787';
+  return trimmed || (isLocalDev() ? 'http://127.0.0.1:8787' : '');
 };
 
 export const getDefaultOCREndpoint = (): string =>
-  location.hostname === '127.0.0.1' || location.hostname === 'localhost'
-    ? 'http://127.0.0.1:8787'
-    : '';
+  isLocalDev() ? 'http://127.0.0.1:8787' : '';
 
 export const makeDefaultOCRSettings = (): OCRSettings => ({
   engine: 'hybrid',

@@ -1557,19 +1557,15 @@ const checkOCRChannel = async (): Promise<void> => {
   setOcrEngineStatus('检测中...');
   try {
     const endpoint = settings.tencentEndpoint.replace(/\/$/, '');
-    const [healthResp, capResp] = await Promise.all([
-      fetch(`${endpoint}/health`),
-      fetch(`${endpoint}/api/capabilities`)
-    ]);
+    const healthResp = await fetch(`${endpoint}/api/health`);
 
     const health = await healthResp.json().catch(() => ({} as Record<string, unknown>));
-    const capabilities = await capResp.json().catch(() => ({} as Record<string, unknown>));
-    if (!healthResp.ok || !capResp.ok) {
+    if (!healthResp.ok) {
       throw new Error('代理返回异常状态码');
     }
 
-    const secretConfigured = capabilities?.secretConfigured === true;
-    const autoActions = Array.isArray(capabilities?.autoActions) ? capabilities.autoActions.join(' -> ') : 'unknown';
+    const secretConfigured = health?.secretConfigured === true;
+    const autoActions = 'ExtractDocMulti -> GeneralAccurateOCR -> GeneralBasicOCR';
     const serviceName = String(health?.service || 'tencent-ocr-proxy');
     const fallbackText = settings.allowLocalFallback ? '开启' : '关闭';
     const latestSource = ocrDrafts.length > 0 ? `；最近识别来源：${ocrDrafts[0].source}` : '';
@@ -1958,7 +1954,7 @@ const renderManualTuneEditor = (): void => {
               <h3>Group ${logicalGroupIndex + 1}</h3>
               <div class="seats">
                 ${draft.groups[logicalGroupIndex].map((_, seatIndex) => renderSeat({
-                  key: `g-${logicalGroupIndex}-${seatIndex}`,
+                  key: `c-${logicalGroupIndex}-${seatIndex}`,
                   label: `位置 ${seatIndex + 1}`,
                   kind: 'circular',
                   groupIndex: logicalGroupIndex,
@@ -2234,7 +2230,7 @@ const processBatchImport = (): void => {
         }
 
         if (line.startsWith('时间:')) {
-          state.classData[className][activeMode].locationInfo.time = line.split(':')[1]?.trim() || '';
+          state.classData[className][activeMode].locationInfo.time = line.slice(line.indexOf(':') + 1).trim();
           return;
         }
 

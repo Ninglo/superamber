@@ -2,6 +2,7 @@ import Tesseract from 'tesseract.js';
 import { monthDayToDateKey } from './calendar';
 import { COMMON_ENGLISH_NAMES } from './englishNames';
 import { placeCentered } from './layouts';
+import { getDefaultOCREndpoint } from './ocrSettings';
 import type { LayoutType, OCRSettings } from './types';
 
 const MAX_GROUP_COUNT = 6;
@@ -1203,7 +1204,7 @@ export const recognizeClassFromImage = async (imageFile: File, settings?: OCRSet
   const activeSettings: OCRSettings = {
     engine,
     allowLocalFallback: settings?.allowLocalFallback ?? false,
-    tencentEndpoint: settings?.tencentEndpoint?.trim() || 'http://127.0.0.1:8787',
+    tencentEndpoint: settings?.tencentEndpoint?.trim() || getDefaultOCREndpoint(),
     tencentRegion: settings?.tencentRegion?.trim() || 'ap-guangzhou',
     tencentAction: settings?.tencentAction || 'Auto'
   };
