@@ -93,6 +93,19 @@ const splitEvenly = (students: string[], groupCount: number, capacity: number): 
 
 const countNonEmptyGroups = (groups: string[][]): number => groups.filter((group) => group.some((name) => name.trim())).length;
 
+const rotateNames = (group: string[], shift: number): string[] => {
+  const nonEmpty = group.filter((name) => name.trim());
+  const emptyCount = group.length - nonEmpty.length;
+
+  if (nonEmpty.length <= 1) {
+    return copyGroup(group, group.length);
+  }
+
+  const normalizedShift = ((shift % nonEmpty.length) + nonEmpty.length) % nonEmpty.length || 1;
+  const rotated = [...nonEmpty.slice(-normalizedShift), ...nonEmpty.slice(0, -normalizedShift)];
+  return [...rotated, ...Array(emptyCount).fill('')];
+};
+
 export const placeCentered = (targetArray: string[], names: string[]): void => {
   const width = targetArray.length;
   let centerLeft = Math.floor((width - 1) / 2);
@@ -201,7 +214,7 @@ export const getRowsGroupCountFromGroups = (rowGroups: RowGroups): number =>
   countNonEmptyGroups(rowGroupsToSlotGroups(rowGroups));
 
 export const rotateCircularLayoutForWeek = (groups: string[][]): string[][] => {
-  const internalRotated = groups.map((group) => copyGroup(group, CIRCULAR_GROUP_SIZE));
+  const internalRotated = groups.map((group) => rotateNames(copyGroup(group, CIRCULAR_GROUP_SIZE), 2));
   const activeCount = getCircularGroupCountFromGroups(internalRotated);
   if (activeCount <= 1) {
     return internalRotated;
@@ -256,7 +269,7 @@ export const rotateRowsLayoutForWeek = (rowGroups: RowGroups): RowGroups => {
   }
 
   const slotMap = getRowsSlotMap(activeCount);
-  const internalRotated = slotGroups.map((group) => copyGroup(group, ROW_GROUP_SIZE));
+  const internalRotated = slotGroups.map((group) => rotateNames(copyGroup(group, ROW_GROUP_SIZE), 1));
   const rotationPath = [0, 2, 4, 1, 3, 5];
   const activeSlots = rotationPath.filter((slotIndex) => slotMap[slotIndex] !== null);
   const rotatedSlots = Array.from({ length: 6 }, () => Array(ROW_GROUP_SIZE).fill(''));
@@ -270,7 +283,7 @@ export const rotateRowsLayoutForWeek = (rowGroups: RowGroups): RowGroups => {
 };
 
 export const rotateArcLayoutForWeek = (arcGroups: ArcGroups): ArcGroups => {
-  const rows = arcGroups.rows.map((row) => copyGroup(row, ARC_ROW_SIZE));
+  const rows = arcGroups.rows.map((row) => rotateNames(copyGroup(row, ARC_ROW_SIZE), 2));
   return { rows };
 };
 
