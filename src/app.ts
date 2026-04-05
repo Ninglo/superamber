@@ -1229,9 +1229,59 @@ const showRosterDialog = (): void => {
 
   summary.textContent = `${className} · ${modeLabel} · 当前总人数 ${students.length} 人`;
   rosterList.innerHTML = students.length
-    ? students.map((student, index) => `<div class="roster-item"><span>${index + 1}.</span><strong>${escapeHtml(student)}</strong></div>`).join('')
+    ? students.map((student, index) => `<div class="roster-item"><span>${index + 1}.</span><strong>${escapeHtml(student)}</strong><button type="button" class="roster-delete-btn" data-delete-student="${escapeHtml(student)}" title="删除该学生">&times;</button></div>`).join('')
     : '<div class="muted">当前没有学生名单。</div>';
   showDialog('rosterDialog');
+};
+
+const removeStudentFromSeats = (name: string): void => {
+  const className = classSelect().value.trim();
+  if (!className || !state.classData[className]) {
+    return;
+  }
+  const mode = state.classData[className][state.currentTimeMode];
+  if (!mode) {
+    return;
+  }
+
+  if (mode.groups) {
+    for (const group of mode.groups) {
+      for (let i = 0; i < group.length; i++) {
+        if (group[i] === name) {
+          group[i] = '';
+        }
+      }
+    }
+    state.groups = deepCopy(mode.groups);
+  }
+  if (mode.rowGroups) {
+    for (const row of mode.rowGroups.rows) {
+      for (let i = 0; i < row.left.length; i++) {
+        if (row.left[i] === name) {
+          row.left[i] = '';
+        }
+      }
+      for (let i = 0; i < row.right.length; i++) {
+        if (row.right[i] === name) {
+          row.right[i] = '';
+        }
+      }
+    }
+    state.rowGroups = deepCopy(mode.rowGroups);
+  }
+  if (mode.arcGroups) {
+    for (const row of mode.arcGroups.rows) {
+      for (let i = 0; i < row.length; i++) {
+        if (row[i] === name) {
+          row[i] = '';
+        }
+      }
+    }
+    state.arcGroups = deepCopy(mode.arcGroups);
+  }
+  persist();
+  renderClassOverview();
+  showRosterDialog();
 };
 
 const hideRosterDialog = (): void => {
@@ -1930,6 +1980,7 @@ const renderManualTuneEditor = (): void => {
   const renderSeat = (seat: ManualSeatRef, label: string): string => `
     <div class="seat manual-seat${draft.selectedSeatKey === seat.key ? ' selected' : ''}" data-seat-key="${seat.key}">
       <span class="manual-seat-label">${escapeHtml(label)}</span>
+      <button type="button" class="manual-seat-clear" data-clear-key="${seat.key}" title="清空此座位">&times;</button>
       <input data-seat-input="${seat.key}" value="${escapeHtml(getManualSeatValue(draft, seat))}" />
     </div>
   `;
@@ -2108,6 +2159,33 @@ const addManualTuneStudent = (): void => {
   setManualSeatValue(manualTuneDraft, target, name);
   input.value = '';
   byId<HTMLDivElement>('manualTuneError').textContent = '';
+  renderManualTuneEditor();
+};
+
+const shuffleManualTuneSeats = (): void => {
+  if (!manualTuneDraft) {
+    return;
+  }
+
+  const allSeats = buildManualSeatSections(manualTuneDraft).flatMap((s) => s.seats);
+  const occupiedSeats = allSeats.filter((seat) => getManualSeatValue(manualTuneDraft!, seat).trim());
+
+  if (occupiedSeats.length <= 1) {
+    return;
+  }
+
+  const names = occupiedSeats.map((seat) => getManualSeatValue(manualTuneDraft!, seat));
+
+  for (let i = names.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [names[i], names[j]] = [names[j], names[i]];
+  }
+
+  occupiedSeats.forEach((seat, index) => {
+    setManualSeatValue(manualTuneDraft!, seat, names[index]);
+  });
+
+  manualTuneDraft.selectedSeatKey = null;
   renderManualTuneEditor();
 };
 
@@ -2621,7 +2699,20 @@ const bindCoreEvents = (): void => {
     }
 
     const target = event.target as HTMLElement;
-    if (target.closest('input')) {
+
+    const clearBtn = target.closest<HTMLElement>('[data-clear-key]');
+    if (clearBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const clearKey = clearBtn.dataset.clearKey;
+      if (clearKey) {
+        const seat = findManualSeat(manualTuneDraft, clearKey);
+        if (seat) {
+          setManualSeatValue(manualTuneDraft, seat, '');
+          manualTuneDraft.selectedSeatKey = null;
+          renderManualTuneEditor();
+        }
+      }
       return;
     }
 
@@ -2631,11 +2722,21 @@ const bindCoreEvents = (): void => {
       return;
     }
 
+    // In swap mode (a seat is already selected), clicking any part of another seat
+    // triggers the swap — even if the click lands on the input element.
+    // Outside swap mode, clicks on input are ignored so users can edit names.
+    if (!manualTuneDraft.selectedSeatKey && target.closest('input')) {
+      return;
+    }
+
     if (!manualTuneDraft.selectedSeatKey || manualTuneDraft.selectedSeatKey === key) {
       manualTuneDraft.selectedSeatKey = manualTuneDraft.selectedSeatKey === key ? null : key;
       renderManualTuneEditor();
       return;
     }
+
+    // Prevent the click from also focusing the input after swap
+    event.preventDefault();
 
     const firstSeat = findManualSeat(manualTuneDraft, manualTuneDraft.selectedSeatKey);
     const secondSeat = findManualSeat(manualTuneDraft, key);
@@ -2670,6 +2771,17 @@ const bindCoreEvents = (): void => {
     }
 
     setManualSeatValue(manualTuneDraft, seat, target.value);
+  });
+  byId<HTMLDivElement>('rosterList').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const btn = target.closest<HTMLElement>('[data-delete-student]');
+    if (!btn) {
+      return;
+    }
+    const studentName = btn.dataset.deleteStudent;
+    if (studentName && confirm(`确定要删除「${studentName}」吗？`)) {
+      removeStudentFromSeats(studentName);
+    }
   });
   byId<HTMLSelectElement>('editorThemeSelect').addEventListener('change', (event) => {
     const className = classSelect().value.trim();
@@ -2742,6 +2854,7 @@ interface AppWindow extends Window {
   hideManualTuneDialog: () => void;
   applyManualGroupCount: () => void;
   addManualTuneStudent: () => void;
+  shuffleManualTuneSeats: () => void;
   applyManualTune: () => void;
   copyCurrentToOtherMode: () => void;
   showPreviousWeekDialog: () => void;
@@ -2788,6 +2901,7 @@ const exposeToWindow = (): void => {
   w.hideManualTuneDialog = hideManualTuneDialog;
   w.applyManualGroupCount = applyManualGroupCount;
   w.addManualTuneStudent = addManualTuneStudent;
+  w.shuffleManualTuneSeats = shuffleManualTuneSeats;
   w.applyManualTune = applyManualTune;
   w.copyCurrentToOtherMode = copyCurrentToOtherMode;
   w.showPreviousWeekDialog = showPreviousWeekDialog;

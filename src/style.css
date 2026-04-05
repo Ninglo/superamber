@@ -1591,6 +1591,58 @@ button:disabled {
   text-align: center;
 }
 
+.manual-seat-clear {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, #f44336 15%, transparent 85%);
+  color: #f44336;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 2;
+}
+
+.manual-seat:hover .manual-seat-clear {
+  opacity: 1;
+}
+
+.manual-seat-clear:hover {
+  background: #f44336;
+  color: #fff;
+  transform: none;
+}
+
+.roster-delete-btn {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, #f44336 15%, transparent 85%);
+  color: #f44336;
+  font-size: 14px;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.roster-delete-btn:hover {
+  background: #f44336;
+  color: #fff;
+  transform: none;
+}
+
 .manual-group-empty h3,
 .manual-table-empty h3 {
   opacity: 0.55;

@@ -336,6 +336,9 @@ export const appTemplate = `
       <input type="text" id="manualNewStudent" placeholder="输入新学生名字" />
       <button type="button" onclick="addManualTuneStudent()">加入空位</button>
     </div>
+    <div class="manual-row">
+      <button type="button" onclick="shuffleManualTuneSeats()">随机排座</button>
+    </div>
     <div id="manualTuneStatus" class="manual-status">换位模式：先点一个座位，再点另一个座位完成交换。</div>
     <div id="manualSeatEditor" class="manual-seat-editor"></div>
     <div id="manualTuneError" class="error"></div>
