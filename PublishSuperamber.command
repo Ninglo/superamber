@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_NAME="newestclasstable"
+REPO_NAME="superamber"
 
 cd "$PROJECT_DIR"
 

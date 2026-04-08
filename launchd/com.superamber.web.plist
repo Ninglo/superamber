@@ -3,25 +3,25 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.newestclasstable.web</string>
+  <string>com.superamber.web</string>
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/mac/Documents/New project/doucments/newestclasstable/node_modules/vite/bin/vite.js</string>
+    <string>/Users/jiujianian/code/superamber/node_modules/vite/bin/vite.js</string>
     <string>--host</string>
     <string>127.0.0.1</string>
     <string>--port</string>
     <string>5173</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/mac/Documents/New project/doucments/newestclasstable</string>
+  <string>/Users/jiujianian/code/superamber</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/mac/Documents/New project/doucments/newestclasstable/.runtime/launchd-web.out.log</string>
+  <string>/Users/jiujianian/code/superamber/.runtime/launchd-web.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/mac/Documents/New project/doucments/newestclasstable/.runtime/launchd-web.err.log</string>
+  <string>/Users/jiujianian/code/superamber/.runtime/launchd-web.err.log</string>
 </dict>
 </plist>

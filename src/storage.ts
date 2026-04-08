@@ -1,14 +1,12 @@
+import { readStorageValue, removeStorageValue, storageKeys, writeStorageValue } from './appMeta';
 import type { ClassData, UserProfile } from './types';
 import { makeDefaultProfile } from './state';
 
-const CLASS_STORAGE_KEY = 'classSeatingData';
-const PROFILE_STORAGE_KEY = 'classSeatingProfile';
-const BATCH_UNDO_STORAGE_KEY = 'classSeatingBatchUndoData';
 const VALID_THEMES = new Set(['paper', 'classic', 'mint', 'rose', 'apricot', 'golden', 'plum']);
 const isThemeName = (theme: string): theme is UserProfile['theme'] => VALID_THEMES.has(theme);
 
 export const loadClassData = (): ClassData => {
-  const saved = localStorage.getItem(CLASS_STORAGE_KEY);
+  const saved = readStorageValue(storageKeys.classData);
   if (!saved) {
     return {};
   }
@@ -21,11 +19,11 @@ export const loadClassData = (): ClassData => {
 };
 
 export const saveClassData = (classData: ClassData): void => {
-  localStorage.setItem(CLASS_STORAGE_KEY, JSON.stringify(classData));
+  writeStorageValue(storageKeys.classData, JSON.stringify(classData));
 };
 
 export const loadBatchUndoData = (): ClassData | null => {
-  const saved = localStorage.getItem(BATCH_UNDO_STORAGE_KEY);
+  const saved = readStorageValue(storageKeys.batchUndo);
   if (!saved) {
     return null;
   }
@@ -38,15 +36,15 @@ export const loadBatchUndoData = (): ClassData | null => {
 };
 
 export const saveBatchUndoData = (classData: ClassData): void => {
-  localStorage.setItem(BATCH_UNDO_STORAGE_KEY, JSON.stringify(classData));
+  writeStorageValue(storageKeys.batchUndo, JSON.stringify(classData));
 };
 
 export const clearBatchUndoData = (): void => {
-  localStorage.removeItem(BATCH_UNDO_STORAGE_KEY);
+  removeStorageValue(storageKeys.batchUndo);
 };
 
 export const loadUserProfile = (): UserProfile => {
-  const saved = localStorage.getItem(PROFILE_STORAGE_KEY);
+  const saved = readStorageValue(storageKeys.userProfile);
   if (!saved) {
     return makeDefaultProfile();
   }
@@ -71,5 +69,5 @@ export const loadUserProfile = (): UserProfile => {
 };
 
 export const saveUserProfile = (profile: UserProfile): void => {
-  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  writeStorageValue(storageKeys.userProfile, JSON.stringify(profile));
 };

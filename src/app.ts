@@ -7,6 +7,7 @@ import {
   monthDayToDateKey,
   parseDateFromClassTime
 } from './calendar';
+import { APP_NAME, BACKUP_FILE_PREFIX, readStorageValue, storageKeys, writeStorageValue } from './appMeta';
 import {
   applyManualGrouping,
   collectStudentsFromArc,
@@ -104,7 +105,6 @@ let ocrSettings: OCRSettings = loadOCRSettings();
 let manualTuneDraft: ManualTuneDraft | null = null;
 let isOcrRecognitionRunning = false;
 let activeClassName = '';
-const usageGuideStorageKey = 'classSeatingUsageGuideDismissed';
 
 const getLaunchClassName = (): string => {
   try {
@@ -191,7 +191,7 @@ const ensureUsername = (): void => {
 const updateWelcome = (): void => {
   const week = getWeekNumber();
   byId<HTMLSpanElement>('homeWeekNum').textContent = String(week);
-  byId<HTMLHeadingElement>('welcomeText').textContent = `Welcome ${state.userProfile.username}!`;
+  byId<HTMLHeadingElement>('welcomeText').textContent = `${APP_NAME} · ${state.userProfile.username}`;
   byId<HTMLParagraphElement>('todayText').textContent = `今天是 ${formatTodayLabel()}，第${week}周，${getChineseWeekday()}`;
   byId<HTMLInputElement>('usernameInput').value = state.userProfile.username;
 };
@@ -201,11 +201,11 @@ const setUsageGuideVisible = (visible: boolean): void => {
     .querySelector<HTMLElement>('.usage-guide')
     ?.classList.toggle('hidden', !visible);
   byId<HTMLButtonElement>('usageGuideToggleBtn').textContent = visible ? '隐藏使用说明' : '查看使用说明';
-  window.localStorage.setItem(usageGuideStorageKey, visible ? '0' : '1');
+  writeStorageValue(storageKeys.usageGuideDismissed, visible ? '0' : '1');
 };
 
 const initializeUsageGuide = (): void => {
-  setUsageGuideVisible(window.localStorage.getItem(usageGuideStorageKey) !== '1');
+  setUsageGuideVisible(readStorageValue(storageKeys.usageGuideDismissed) !== '1');
 };
 
 const toggleUsageGuide = (): void => {
@@ -516,7 +516,7 @@ const exportDataBackup = (): void => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `classsitdown-backup-${stamp}.json`;
+  link.download = `${BACKUP_FILE_PREFIX}-${stamp}.json`;
   link.click();
   URL.revokeObjectURL(url);
 };
@@ -2546,16 +2546,13 @@ const bindNotes = (): void => {
   const widthHandle = byId<HTMLDivElement>('notesWidthHandle');
   const heightHandle = byId<HTMLDivElement>('notesHeightHandle');
   const toolbarToggle = byId<HTMLButtonElement>('notesToolbarToggle');
-  const widthKey = 'classSeatingNotesPanelWidth';
-  const heightKey = 'classSeatingNotesSectionHeight';
-  const collapsedKey = 'classSeatingNotesToolbarCollapsed';
 
   if (panel && notesSection) {
-    const savedWidth = window.localStorage.getItem(widthKey);
+    const savedWidth = readStorageValue(storageKeys.notesPanelWidth);
     if (savedWidth) {
       panel.style.width = `${Math.max(280, Math.min(520, Number(savedWidth) || 360))}px`;
     }
-    const savedHeight = window.localStorage.getItem(heightKey);
+    const savedHeight = readStorageValue(storageKeys.notesSectionHeight);
     if (savedHeight) {
       notesSection.style.height = `${Math.max(520, Number(savedHeight) || 520)}px`;
     }
@@ -2563,19 +2560,19 @@ const bindNotes = (): void => {
     const applyToolbarState = (collapsed: boolean): void => {
       notesSection.classList.toggle('toolbar-collapsed', collapsed);
       toolbarToggle.textContent = collapsed ? '显示设置' : '隐藏设置';
-      window.localStorage.setItem(collapsedKey, collapsed ? '1' : '0');
+      writeStorageValue(storageKeys.notesToolbarCollapsed, collapsed ? '1' : '0');
     };
 
-    applyToolbarState(window.localStorage.getItem(collapsedKey) !== '0');
+    applyToolbarState(readStorageValue(storageKeys.notesToolbarCollapsed) !== '0');
     toolbarToggle.addEventListener('click', () => {
       applyToolbarState(!notesSection.classList.contains('toolbar-collapsed'));
     });
 
     const persistWidth = (): void => {
-      window.localStorage.setItem(widthKey, String(panel.getBoundingClientRect().width));
+      writeStorageValue(storageKeys.notesPanelWidth, String(panel.getBoundingClientRect().width));
     };
     const persistHeight = (): void => {
-      window.localStorage.setItem(heightKey, String(notesSection.getBoundingClientRect().height));
+      writeStorageValue(storageKeys.notesSectionHeight, String(notesSection.getBoundingClientRect().height));
     };
 
     panel.addEventListener('mouseup', persistWidth);
@@ -2802,14 +2799,13 @@ const bindHomeEvents = (): void => {
 const bindCoreEvents = (): void => {
   const editorView = byId<HTMLDivElement>('editorView');
   const editorToolsToggle = byId<HTMLButtonElement>('editorToolsToggle');
-  const editorToolsKey = 'classSeatingEditorToolsCollapsed';
   const applyEditorToolsState = (collapsed: boolean): void => {
     editorView.classList.toggle('editor-tools-collapsed', collapsed);
     editorToolsToggle.textContent = collapsed ? '显示工具' : '隐藏工具';
-    window.localStorage.setItem(editorToolsKey, collapsed ? '1' : '0');
+    writeStorageValue(storageKeys.editorToolsCollapsed, collapsed ? '1' : '0');
   };
 
-  applyEditorToolsState(window.localStorage.getItem(editorToolsKey) === '1');
+  applyEditorToolsState(readStorageValue(storageKeys.editorToolsCollapsed) === '1');
   editorToolsToggle.addEventListener('click', () => {
     applyEditorToolsState(!editorView.classList.contains('editor-tools-collapsed'));
   });
@@ -3073,7 +3069,7 @@ export const initApp = (): void => {
   setCurrentView('home');
   applyLaunchClass();
 
-  // When embedded in an iframe (e.g. inside classsitdown), the outer React shell
+  // When embedded in an iframe inside a legacy host shell, the outer container
   // already provides a back button. Hide the seating app's own "返回主页" to avoid
   // two competing back actions confusing the teacher.
   if (window.self !== window.top) {

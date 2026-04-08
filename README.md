@@ -1,6 +1,6 @@
-# Newest Class Table
+# Super Amber
 
-本地运行的班级座位表工具，包含：
+`Super Amber` 是一套本地运行的班级排座与轮转工具，包含：
 
 - 主页总览与按周轮换
 - 文字导入与图片 OCR 导入
@@ -9,7 +9,13 @@
 
 ## Local Run
 
-建议先使用 Node `20.19+` 或 `22.x`。
+建议先使用 Node `20.19+` 或 `22.x`，仓库默认版本见 `.nvmrc`。
+
+如果本机装了 `nvm`，先执行：
+
+```bash
+nvm use
+```
 
 访问：
 
@@ -40,8 +46,8 @@ npm run dev
 
 项目内提供：
 
-- `StartClassTable.command`
-- `StopClassTable.command`
+- `StartSuperamber.command`
+- `StopSuperamber.command`
 
 ## Notes
 

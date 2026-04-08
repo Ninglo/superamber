@@ -9,7 +9,7 @@
 在项目根目录执行：
 
 ```bash
-cd "/Users/mac/Documents/New project/doucments/newestclasstable"
+cd "/path/to/superamber"
 export TENCENT_SECRET_ID="你的SecretId"
 export TENCENT_SECRET_KEY="你的SecretKey"
 export TENCENT_REGION="ap-guangzhou"
@@ -22,7 +22,7 @@ npm run ocr:proxy
 另开一个终端：
 
 ```bash
-cd "/Users/mac/Documents/New project/doucments/newestclasstable"
+cd "/path/to/superamber"
 npm run dev
 ```
 

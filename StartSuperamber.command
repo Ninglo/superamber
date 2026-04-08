@@ -12,14 +12,14 @@ fi
 pkill -f "python3 -m http.server 4173 --bind 127.0.0.1 -d dist" >/dev/null 2>&1 || true
 pkill -f "node server/tencent-ocr-server.mjs" >/dev/null 2>&1 || true
 
-open "$PROJECT_DIR/RunWeb.command"
+open "$PROJECT_DIR/RunSuperamberWeb.command"
 sleep 1
-open "$PROJECT_DIR/RunOCRProxy.command"
+open "$PROJECT_DIR/RunSuperamberOCR.command"
 
 sleep 2
 open "http://127.0.0.1:4173" || true
 
-echo "Class table is running."
+echo "Super Amber is running."
 echo "Web: http://127.0.0.1:4173"
 echo "OCR: http://127.0.0.1:8787/health"
 echo "Keep the two Terminal windows open while using the app."

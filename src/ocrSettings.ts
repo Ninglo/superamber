@@ -1,6 +1,6 @@
+import { readStorageValue, storageKeys, writeStorageValue } from './appMeta';
 import type { OCRSettings } from './types';
 
-const OCR_SETTINGS_STORAGE_KEY = 'classSeatingOCRSettings';
 const OCR_ENDPOINT_QUERY_KEY = 'ocrEndpoint';
 
 const isLocalDev = (): boolean =>
@@ -33,7 +33,7 @@ export const makeDefaultOCRSettings = (): OCRSettings => ({
 });
 
 export const loadOCRSettings = (): OCRSettings => {
-  const saved = localStorage.getItem(OCR_SETTINGS_STORAGE_KEY);
+  const saved = readStorageValue(storageKeys.ocrSettings);
   if (!saved) {
     return makeDefaultOCRSettings();
   }
@@ -62,8 +62,8 @@ export const loadOCRSettings = (): OCRSettings => {
 export const saveOCRSettings = (settings: OCRSettings): void => {
   const normalizedEndpoint = normalizeEndpoint(settings.tencentEndpoint);
 
-  localStorage.setItem(
-    OCR_SETTINGS_STORAGE_KEY,
+  writeStorageValue(
+    storageKeys.ocrSettings,
     JSON.stringify({
       ...settings,
       tencentEndpoint: normalizedEndpoint,

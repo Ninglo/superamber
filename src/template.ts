@@ -4,7 +4,7 @@ export const appTemplate = `
   <section class="home-view" id="homeView">
     <header class="home-header">
       <div class="welcome-box" id="welcomeBox" title="右键可修改用户名">
-        <h1 id="welcomeText">Welcome!</h1>
+        <h1 id="welcomeText">Super Amber</h1>
         <p id="todayText">今天是</p>
       </div>
       <div class="theme-switch">
@@ -43,7 +43,7 @@ export const appTemplate = `
           <h2 id="usageGuideTitle">第一次打开先看这里</h2>
         </div>
         <div class="usage-guide-header-actions">
-          <p class="usage-guide-note">这是一套静态网页工具，上传到公司网站后即可直接访问。</p>
+          <p class="usage-guide-note">Super Amber 是一套静态网页工具，上传到公司网站后即可直接访问。</p>
           <button type="button" class="usage-guide-close" onclick="toggleUsageGuide()">收起</button>
         </div>
       </div>
