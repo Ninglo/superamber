@@ -7,7 +7,7 @@ import {
   monthDayToDateKey,
   parseDateFromClassTime
 } from './calendar';
-import { APP_NAME, BACKUP_FILE_PREFIX, readStorageValue, storageKeys, writeStorageValue } from './appMeta';
+import { APP_NAME, APP_SLUG, BACKUP_FILE_PREFIX, readStorageValue, storageKeys, writeStorageValue } from './appMeta';
 import {
   applyManualGrouping,
   collectStudentsFromArc,
@@ -75,6 +75,10 @@ interface OCRDraftView {
 }
 
 interface BackupPayload {
+  app: {
+    name: string;
+    slug: string;
+  };
   exportedAt: string;
   sourceOrigin: string;
   classData: ClassData;
@@ -499,6 +503,10 @@ const sanitizeImportedTheme = (theme: string | undefined): ThemeName => {
 };
 
 const buildBackupPayload = (): BackupPayload => ({
+  app: {
+    name: APP_NAME,
+    slug: APP_SLUG
+  },
   exportedAt: new Date().toISOString(),
   sourceOrigin: window.location.origin,
   classData: deepCopy(state.classData),
@@ -3070,7 +3078,7 @@ export const initApp = (): void => {
   applyLaunchClass();
 
   // When embedded in an iframe inside a legacy host shell, the outer container
-  // already provides a back button. Hide the seating app's own "返回主页" to avoid
+  // already provides a back button. Hide Super Amber's own "返回主页" to avoid
   // two competing back actions confusing the teacher.
   if (window.self !== window.top) {
     const backHomeBtn = document.querySelector<HTMLElement>('.back-home');

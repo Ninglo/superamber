@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
 if [[ ! -f "dist/index.html" ]]; then
-  echo "Missing dist/index.html. Build the frontend before starting."
+  echo "Missing Super Amber build output. Run the frontend build before starting."
   exit 1
 fi
 

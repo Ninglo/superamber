@@ -6,7 +6,7 @@
 - `SecretKey`
 
 ## 2. 启动本地代理（必须）
-在项目根目录执行：
+在 `Super Amber` 项目根目录执行：
 
 ```bash
 cd "/path/to/superamber"

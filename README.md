@@ -48,6 +48,9 @@ npm run dev
 
 - `StartSuperamber.command`
 - `StopSuperamber.command`
+- `RunSuperamberWeb.command`
+- `RunSuperamberOCR.command`
+- `PublishSuperamber.command`
 
 ## Notes
 
