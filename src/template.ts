@@ -224,6 +224,7 @@ export const appTemplate = `
       <button onclick="showBatchImportDialog()">批量导入</button>
       <button onclick="showImportDialog()">文字导入</button>
       <button onclick="showImageImportDialog()">图片导入</button>
+      <button onclick="showCnfSyncDialog()">教务导入</button>
       <button onclick="showManualTuneDialog()">手动微调</button>
       <button onclick="showPreviousWeekDialog()">看看上周座位</button>
       <button onclick="showRosterDialog()">完整名单</button>
@@ -403,6 +404,30 @@ Group 1: Amy, Lucas</div>
     <div class="buttons">
       <button class="cancel" onclick="hideBatchImportDialog()">取消</button>
       <button class="confirm" onclick="processBatchImport()">确认导入</button>
+    </div>
+  </div>
+
+  <div class="dialog cnf-sync-dialog" id="cnfSyncDialog">
+    <h2>教务系统导入</h2>
+    <div class="cnf-sync-form">
+      <div class="cnf-field">
+        <label for="cnfUsername">教务账号</label>
+        <input type="text" id="cnfUsername" placeholder="教务系统用户名" autocomplete="username" />
+      </div>
+      <div class="cnf-field">
+        <label for="cnfPassword">密码</label>
+        <input type="password" id="cnfPassword" placeholder="教务系统密码" autocomplete="current-password" />
+      </div>
+      <div class="cnf-field">
+        <label for="cnfSquadId">班级 ID 或页面链接</label>
+        <input type="text" id="cnfSquadId" placeholder="如 1235 或粘贴班控台页面链接" />
+      </div>
+    </div>
+    <div id="cnfSyncStatus" class="cnf-sync-status"></div>
+    <div class="buttons">
+      <button class="cancel" onclick="hideCnfSyncDialog()">取消</button>
+      <button id="cnfLoginBtn" onclick="cnfLoginAction()">验证登录</button>
+      <button id="cnfFetchBtn" class="confirm" onclick="cnfFetchAction()" disabled>抓取名单</button>
     </div>
   </div>
 `;

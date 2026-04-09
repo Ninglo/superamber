@@ -18,6 +18,7 @@ export const storageKeys = {
   userProfile: createStorageKeySpec('superamberUserProfile', ['classSeatingProfile']),
   batchUndo: createStorageKeySpec('superamberBatchUndoData', ['classSeatingBatchUndoData']),
   ocrSettings: createStorageKeySpec('superamberOCRSettings', ['classSeatingOCRSettings']),
+  cnfSyncProfile: createStorageKeySpec('superamberCnfSyncProfile', ['classSeatingCnfSyncProfile']),
   usageGuideDismissed: createStorageKeySpec('superamberUsageGuideDismissed', ['classSeatingUsageGuideDismissed']),
   notesPanelWidth: createStorageKeySpec('superamberNotesPanelWidth', ['classSeatingNotesPanelWidth']),
   notesSectionHeight: createStorageKeySpec('superamberNotesSectionHeight', ['classSeatingNotesSectionHeight']),

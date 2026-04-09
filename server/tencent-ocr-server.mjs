@@ -38,6 +38,7 @@ const SERVICE = 'ocr';
 const AUTO_ACTIONS = ['ExtractDocMulti', 'GeneralAccurateOCR', 'GeneralBasicOCR'];
 const SELF_TEST_IMAGE_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZQ3sAAAAASUVORK5CYII=';
+const CNF_BASE_URL = 'https://cnfadmin.cnfschool.net';
 
 const json = (statusCode, payload) => {
   const body = JSON.stringify(payload);
@@ -57,6 +58,182 @@ const json = (statusCode, payload) => {
 const send = (res, response) => {
   res.writeHead(response.statusCode, response.headers);
   res.end(response.body);
+};
+
+const getSetCookieLines = (response) => {
+  if (typeof response.headers.getSetCookie === 'function') {
+    return response.headers.getSetCookie();
+  }
+
+  const raw = response.headers.get('set-cookie');
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(/,(?=\s*[^;,=\s]+=[^;,]*)/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
+
+const mergeCookiesFromResponse = (cookieJar, response) => {
+  const lines = getSetCookieLines(response);
+  lines.forEach((line) => {
+    const cookiePair = line.split(';', 1)[0] || '';
+    const separatorIndex = cookiePair.indexOf('=');
+    if (separatorIndex <= 0) {
+      return;
+    }
+    const name = cookiePair.slice(0, separatorIndex).trim();
+    const value = cookiePair.slice(separatorIndex + 1).trim();
+    if (!name) {
+      return;
+    }
+    cookieJar[name] = value;
+  });
+};
+
+const cookieHeaderFromJar = (cookieJar) =>
+  Object.entries(cookieJar)
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+
+const fetchWithCookieJar = async (url, options, cookieJar) => {
+  const headers = new Headers(options?.headers || {});
+  const cookieHeader = cookieHeaderFromJar(cookieJar);
+  if (cookieHeader) {
+    headers.set('Cookie', cookieHeader);
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers
+  });
+
+  mergeCookiesFromResponse(cookieJar, response);
+  return response;
+};
+
+const extractLoginToken = (html) => {
+  const tokenMatch = html.match(/_token:\s*"([^"]+)"/);
+  return tokenMatch?.[1]?.trim() || '';
+};
+
+const parseCNFClassInfo = (input) => {
+  const raw = String(input || '').trim();
+  if (!raw) {
+    return { squadId: '', squadType: '' };
+  }
+
+  if (/^\d+$/.test(raw)) {
+    return { squadId: raw, squadType: '' };
+  }
+
+  try {
+    const parsed = new URL(raw);
+    return {
+      squadId: String(parsed.searchParams.get('id') || '').trim(),
+      squadType: String(parsed.searchParams.get('type') || '').trim()
+    };
+  } catch {
+    return { squadId: '', squadType: '' };
+  }
+};
+
+const loginCNF = async ({ username, password }) => {
+  const cookieJar = {};
+
+  const loginPageResp = await fetchWithCookieJar(`${CNF_BASE_URL}/admin/auth/login`, { method: 'GET' }, cookieJar);
+  if (!loginPageResp.ok) {
+    throw new Error(`教务登录页请求失败: ${loginPageResp.status}`);
+  }
+
+  const loginHtml = await loginPageResp.text();
+  const loginToken = extractLoginToken(loginHtml);
+  if (!loginToken) {
+    throw new Error('未能解析教务系统登录 token');
+  }
+
+  const loginPayload = new URLSearchParams({
+    username,
+    password,
+    _token: loginToken,
+    remember: 'false'
+  });
+
+  const loginResp = await fetchWithCookieJar(
+    `${CNF_BASE_URL}/admin/auth/login`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json, text/plain, */*'
+      },
+      body: loginPayload.toString()
+    },
+    cookieJar
+  );
+
+  const loginData = await loginResp.json().catch(() => ({}));
+  if (!loginResp.ok) {
+    throw new Error(`教务登录失败: HTTP ${loginResp.status}`);
+  }
+  if (String(loginData?.code || '') !== '1') {
+    throw new Error(String(loginData?.msg || '账号或密码错误'));
+  }
+
+  return cookieJar;
+};
+
+const fetchCNFRoster = async ({ username, password, squadId, squadType }) => {
+  const cookieJar = await loginCNF({ username, password });
+  const normalizedSquadType = String(squadType || '').trim() || 'offline';
+
+  const squadInfoResp = await fetchWithCookieJar(
+    `${CNF_BASE_URL}/admin/squad_console/getSquadInfo?${new URLSearchParams({ squad_id: squadId }).toString()}`,
+    { method: 'GET', headers: { Accept: 'application/json, text/plain, */*' } },
+    cookieJar
+  );
+  const squadInfoData = await squadInfoResp.json().catch(() => ({}));
+  if (!squadInfoResp.ok || Number(squadInfoData?.code) !== 1) {
+    throw new Error(String(squadInfoData?.msg || `班级信息获取失败: HTTP ${squadInfoResp.status}`));
+  }
+
+  const studentResp = await fetchWithCookieJar(
+    `${CNF_BASE_URL}/admin/squad/cop_mip/getStudentList?${new URLSearchParams({
+      squad_id: squadId,
+      squad_type: normalizedSquadType
+    }).toString()}`,
+    { method: 'GET', headers: { Accept: 'application/json, text/plain, */*' } },
+    cookieJar
+  );
+  const studentData = await studentResp.json().catch(() => ({}));
+  if (!studentResp.ok || Number(studentData?.code) !== 1 || !Array.isArray(studentData?.data)) {
+    throw new Error(String(studentData?.msg || `学生名单获取失败: HTTP ${studentResp.status}`));
+  }
+
+  const students = studentData.data.map((item) => {
+    const enName = String(item?.en_name || '').trim();
+    const chName = String(item?.ch_name || '').trim();
+    return {
+      id: Number(item?.id) || 0,
+      no: String(item?.no || '').trim(),
+      enName,
+      chName,
+      displayName: enName || chName || String(item?.no || '').trim()
+    };
+  });
+
+  const squad = squadInfoData?.data || {};
+  return {
+    squad: {
+      id: Number(squad?.id) || Number(squadId) || 0,
+      name: String(squad?.name || '').trim(),
+      fullName: String(squad?.full_name || '').trim(),
+      type: normalizedSquadType
+    },
+    students
+  };
 };
 
 const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -454,6 +631,67 @@ const handleSelfTest = async (res, bodyText) => {
   );
 };
 
+const handleCNFRoster = async (res, bodyText) => {
+  let parsed = {};
+  try {
+    parsed = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    send(res, json(400, { ok: false, error: '请求体不是合法 JSON' }));
+    return;
+  }
+
+  const action = String(parsed?.action || '').trim();
+  const username = String(parsed?.username || '').trim();
+  const password = String(parsed?.password || '');
+  const classUrl = String(parsed?.classUrl || '').trim();
+  const classInfoFromUrl = parseCNFClassInfo(classUrl);
+  const squadId = String(parsed?.squadId || classInfoFromUrl.squadId || '').trim();
+  const squadType = String(parsed?.squadType || classInfoFromUrl.squadType || 'offline').trim() || 'offline';
+
+  if (!username || !password) {
+    send(res, json(400, { ok: false, error: '缺少教务账号或密码' }));
+    return;
+  }
+
+  if (action === 'login') {
+    try {
+      await loginCNF({ username, password });
+      send(res, json(200, { ok: true, message: '登录成功' }));
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '登录失败';
+      send(res, json(401, { ok: false, error: message }));
+      return;
+    }
+  }
+
+  if (action !== 'fetchRoster') {
+    send(res, json(400, { ok: false, error: 'action 必须为 login 或 fetchRoster' }));
+    return;
+  }
+
+  if (!squadId || !/^\d+$/.test(squadId)) {
+    send(res, json(400, { ok: false, error: '缺少有效的班级 ID（squad_id）' }));
+    return;
+  }
+
+  try {
+    const result = await fetchCNFRoster({ username, password, squadId, squadType });
+    send(
+      res,
+      json(200, {
+        ok: true,
+        squad: result.squad,
+        students: result.students,
+        total: result.students.length
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '获取名单失败';
+    send(res, json(502, { ok: false, error: message }));
+  }
+};
+
 const server = createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     send(res, json(200, { ok: true }));
@@ -497,6 +735,19 @@ const server = createServer((req, res) => {
     req.on('end', () => {
       const bodyText = Buffer.concat(chunks).toString('utf8');
       handleSelfTest(res, bodyText).catch((error) => {
+        const message = error instanceof Error ? error.message : '未知错误';
+        send(res, json(500, { ok: false, error: message }));
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/cnf-roster') {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const bodyText = Buffer.concat(chunks).toString('utf8');
+      handleCNFRoster(res, bodyText).catch((error) => {
         const message = error instanceof Error ? error.message : '未知错误';
         send(res, json(500, { ok: false, error: message }));
       });

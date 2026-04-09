@@ -1421,6 +1421,34 @@ button:disabled {
   max-width: 620px;
 }
 
+.cnf-sync-dialog {
+  max-width: 500px;
+}
+
+.cnf-sync-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.cnf-field label {
+  display: block;
+  font-size: 0.85em;
+  margin-bottom: 3px;
+  color: var(--text-muted);
+}
+
+.cnf-sync-status {
+  min-height: 1.4em;
+  font-size: 0.85em;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.cnf-sync-status.cnf-ok { color: var(--success, #2e7d32); }
+.cnf-sync-status.cnf-err { color: var(--error, #c62828); }
+.cnf-sync-status.cnf-busy { color: var(--text-muted); }
+
 .layout-selector {
   display: flex;
   align-items: center;

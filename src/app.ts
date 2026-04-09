@@ -49,6 +49,7 @@ import {
   saveClassData,
   saveUserProfile
 } from './storage';
+import { cnfFetchRoster, cnfLogin, extractSquadIdFromUrl, loadCnfCredentials, saveCnfCredentials } from './cnfSync';
 import type { ArcGroups, ClassConfig, ClassData, ClassSnapshot, LayoutType, LocationInfo, OCRSettings, ThemeName, TimeMode } from './types';
 
 interface OCRDraftView {
@@ -483,6 +484,7 @@ const sanitizeClassDataMap = (loaded: ClassData): ClassData => {
     shell.weekday = snapshot.weekday;
     shell.weekend = snapshot.weekend;
     shell.previousWeek = config.previousWeek ? sanitizeClassSnapshot(config.previousWeek) : null;
+    shell.cnf = config.cnf || null;
     sanitized[className] = shell;
   });
 
@@ -1226,7 +1228,8 @@ const generateWeeklySeating = (): void => {
       theme: current.theme,
       previousWeek: snapshotFromConfig(current),
       weekday: rotateSingleClassMode(current.weekday, true),
-      weekend: rotateSingleClassMode(current.weekend, true)
+      weekend: rotateSingleClassMode(current.weekend, true),
+      cnf: current.cnf || null
     };
   });
 
@@ -1318,7 +1321,8 @@ const restorePreviousWeek = (): void => {
   const currentSnapshot = snapshotFromConfig(current);
   state.classData[className] = {
     ...sanitizeClassSnapshot(previousWeek),
-    previousWeek: currentSnapshot
+    previousWeek: currentSnapshot,
+    cnf: current.cnf || null
   };
   persist();
   loadClass();
@@ -2334,6 +2338,138 @@ const applyManualTune = (): void => {
   hideManualTuneDialog();
 };
 
+// ── CNF Sync (教务导入) ──────────────────────────────────
+
+let cnfSyncBusy = false;
+
+const setCnfStatus = (text: string, cls: 'cnf-ok' | 'cnf-err' | 'cnf-busy' | '' = ''): void => {
+  const el = byId<HTMLDivElement>('cnfSyncStatus');
+  el.textContent = text;
+  el.className = `cnf-sync-status ${cls}`.trim();
+};
+
+const showCnfSyncDialog = (): void => {
+  const creds = loadCnfCredentials();
+  byId<HTMLInputElement>('cnfUsername').value = creds.username;
+  byId<HTMLInputElement>('cnfPassword').value = creds.password;
+
+  const currentCnf = activeClassName ? state.classData[activeClassName]?.cnf : null;
+  byId<HTMLInputElement>('cnfSquadId').value = currentCnf?.squadId || '';
+
+  byId<HTMLButtonElement>('cnfFetchBtn').disabled = true;
+  setCnfStatus('');
+  showDialog('cnfSyncDialog');
+};
+
+const hideCnfSyncDialog = (): void => {
+  hideDialog('cnfSyncDialog');
+};
+
+const getCnfFormCreds = () => ({
+  username: byId<HTMLInputElement>('cnfUsername').value.trim(),
+  password: byId<HTMLInputElement>('cnfPassword').value
+});
+
+const cnfLoginAction = async (): Promise<void> => {
+  if (cnfSyncBusy) return;
+  const creds = getCnfFormCreds();
+  if (!creds.username || !creds.password) {
+    setCnfStatus('请填写账号和密码', 'cnf-err');
+    return;
+  }
+  cnfSyncBusy = true;
+  setCnfStatus('正在验证登录...', 'cnf-busy');
+  try {
+    await cnfLogin(creds);
+    saveCnfCredentials(creds);
+    setCnfStatus('登录成功，可以抓取名单了', 'cnf-ok');
+    byId<HTMLButtonElement>('cnfFetchBtn').disabled = false;
+  } catch (err) {
+    setCnfStatus(err instanceof Error ? err.message : '登录失败', 'cnf-err');
+  } finally {
+    cnfSyncBusy = false;
+  }
+};
+
+const cnfFetchAction = async (): Promise<void> => {
+  if (cnfSyncBusy) return;
+  const creds = getCnfFormCreds();
+  const rawId = byId<HTMLInputElement>('cnfSquadId').value;
+  const squadId = extractSquadIdFromUrl(rawId);
+  if (!squadId) {
+    setCnfStatus('请填写班级 ID 或粘贴班控台链接', 'cnf-err');
+    return;
+  }
+
+  cnfSyncBusy = true;
+  setCnfStatus('正在抓取学生名单...', 'cnf-busy');
+  hideCnfSyncDialog();
+
+  try {
+    const result = await cnfFetchRoster(creds, squadId, 'offline');
+    saveCnfCredentials(creds);
+
+    const names = result.students.map((s) => s.displayName).filter(Boolean);
+    if (names.length === 0) {
+      setCnfStatus('该班级暂无学生', 'cnf-err');
+      showDialog('cnfSyncDialog');
+      return;
+    }
+
+    // Determine target class name
+    const squadName = result.squad.name || result.squad.fullName || `班级${squadId}`;
+    let targetClassName = activeClassName || squadName;
+
+    // If no active class, create one
+    if (!activeClassName) {
+      const shell = makeClassShell('circular', state.userProfile.theme);
+      state.classData[squadName] = shell;
+      targetClassName = squadName;
+    }
+
+    // Write names into current layout (circular default)
+    const config = state.classData[targetClassName];
+    if (config) {
+      config.cnf = {
+        squadId,
+        squadType: 'offline',
+        sessionToken: '',
+        loginUsername: creds.username,
+        lastSyncedAt: new Date().toISOString()
+      };
+
+      // Put students into weekday circular groups
+      const maxSlots = layoutMaxStudents('circular');
+      const sliced = names.slice(0, maxSlots);
+      const groups = convertStudentsToCircular(sliced);
+      config.weekday.layout = 'circular';
+      config.weekday.groups = groups;
+      config.weekday.groupOrder = [1, 2, 3, 4, 5, 6];
+
+      saveClassData(state.classData);
+
+      // Switch to that class
+      classSelect().value = targetClassName;
+      loadClass();
+      renderClassOverview();
+      refresh();
+    }
+
+    // Brief toast-like feedback — reuse showSuccess from import flow
+    const errorMsg = byId<HTMLDivElement>('errorMsg');
+    errorMsg.textContent = `已从教务系统导入 ${names.length} 名学生（${squadName}）`;
+    errorMsg.className = 'success';
+    setTimeout(() => { errorMsg.textContent = ''; errorMsg.className = ''; }, 3000);
+  } catch (err) {
+    setCnfStatus(err instanceof Error ? err.message : '抓取失败', 'cnf-err');
+    showDialog('cnfSyncDialog');
+  } finally {
+    cnfSyncBusy = false;
+  }
+};
+
+// ── Batch Import ──────────────────────────────────────────
+
 const showBatchImportDialog = (): void => {
   byId<HTMLTextAreaElement>('batchImportData').value = '';
   byId<HTMLDivElement>('batchImportError').textContent = '';
@@ -3004,6 +3140,10 @@ interface AppWindow extends Window {
   exportDataBackup: () => void;
   triggerImportBackup: () => void;
   toggleUsageGuide: () => void;
+  showCnfSyncDialog: () => void;
+  hideCnfSyncDialog: () => void;
+  cnfLoginAction: () => Promise<void>;
+  cnfFetchAction: () => Promise<void>;
 }
 
 const exposeToWindow = (): void => {
@@ -3051,6 +3191,10 @@ const exposeToWindow = (): void => {
   w.exportDataBackup = exportDataBackup;
   w.triggerImportBackup = triggerImportBackup;
   w.toggleUsageGuide = toggleUsageGuide;
+  w.showCnfSyncDialog = showCnfSyncDialog;
+  w.hideCnfSyncDialog = hideCnfSyncDialog;
+  w.cnfLoginAction = cnfLoginAction;
+  w.cnfFetchAction = cnfFetchAction;
 };
 
 const loadProfile = (): void => {

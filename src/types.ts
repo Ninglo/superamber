@@ -45,8 +45,17 @@ export interface ClassSnapshot {
   weekend: TimeModeData;
 }
 
+export interface CnfBinding {
+  squadId: string;
+  squadType: 'offline' | 'online';
+  sessionToken: string;
+  loginUsername: string;
+  lastSyncedAt: string;
+}
+
 export interface ClassConfig extends ClassSnapshot {
   previousWeek: ClassSnapshot | null;
+  cnf: CnfBinding | null;
 }
 
 export type ClassData = Record<string, ClassConfig>;

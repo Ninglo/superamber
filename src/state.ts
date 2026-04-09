@@ -54,7 +54,8 @@ export const makeClassShell = (layout: LayoutType = 'circular', theme: ThemeName
   theme,
   weekday: makeModeData(layout),
   weekend: makeModeData(layout),
-  previousWeek: null
+  previousWeek: null,
+  cnf: null
 });
 
 export const makeDefaultProfile = (): UserProfile => ({
