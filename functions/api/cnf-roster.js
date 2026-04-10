@@ -11,9 +11,21 @@ function jsonResponse(status, payload) {
   return new Response(JSON.stringify(payload), { status, headers: corsHeaders });
 }
 
+function getSetCookieLines(headers) {
+  // Prefer getSetCookie() (available in newer CF Workers runtimes)
+  if (typeof headers.getSetCookie === 'function') {
+    const lines = headers.getSetCookie();
+    if (lines && lines.length > 0) return lines;
+  }
+  // Fallback: parse the concatenated set-cookie header
+  const raw = headers.get('set-cookie');
+  if (!raw) return [];
+  // Split on comma boundaries that look like new cookie starts (not expires dates)
+  return raw.split(/,(?=\s*[^;,=\s]+=[^;,]*)/g).map(l => l.trim()).filter(Boolean);
+}
+
 function mergeCookies(jar, headers) {
-  const lines = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : [];
-  for (const line of lines) {
+  for (const line of getSetCookieLines(headers)) {
     const pair = line.split(';', 1)[0] || '';
     const sep = pair.indexOf('=');
     if (sep <= 0) continue;

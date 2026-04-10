@@ -201,6 +201,11 @@ const loginCNF = async ({ username, password }) => {
     cookieJar
   );
 
+  // Handle both 200 (JSON body) and 302 (redirect on success in some Laravel setups)
+  if (loginResp.status >= 300 && loginResp.status < 400) {
+    return cookieJar;
+  }
+
   const loginData = await loginResp.json().catch(() => ({}));
   if (!loginResp.ok) {
     throw new Error(`教务登录失败: HTTP ${loginResp.status}`);
